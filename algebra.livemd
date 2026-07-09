@@ -1,0 +1,651 @@
+# Geometric Algebra
+
+## Macro
+
+```elixir
+defmodule GeometricAlgebra.Blade do
+  @moduledoc """
+  Basis blade operations using bitmask encoding.
+  """
+
+  @doc """
+  Returns the grade of a blade.
+
+
+  """
+  def grade(mask) do
+    popcount(mask)
+  end
+
+  @doc """
+  Returns the sign and resulting blade of multiplying two blades.
+
+  The signature is a list where each element is the square of a basis vector:
+
+      [1, -1, 0] == e1²=1, e2²=-1, e3²=0
+  """
+  def multiply(a, b, signature) do
+    sign =
+      swap_sign(a, b)
+
+    metric =
+      metric_factor(Bitwise.band(a, b), signature)
+
+    {
+      sign * metric,
+      Bitwise.bxor(a, b)
+    }
+  end
+
+  # Count swaps needed to move all basis vectors of a
+  # before those of b into canonical order.
+  defp swap_sign(a, b) do
+    swaps =
+      a
+      |> bit_positions()
+      |> Enum.reduce(0, fn i, acc ->
+        lower_bits =
+          Bitwise.band(b, Bitwise.bsl(1, i) - 1)
+
+        acc + popcount(lower_bits)
+      end)
+
+    if rem(swaps, 2) == 0 do
+      1
+    else
+      -1
+    end
+  end
+
+  defp popcount(n, acc \\ 0)
+  defp popcount(0, acc), do: acc
+  defp popcount(n, acc), do: popcount(Bitwise.bsr(n, 1), acc + Bitwise.band(n, 1))
+
+  defp metric_factor(common, signature) do
+    common
+    |> bit_positions()
+    |> Enum.reduce(1, fn i, acc ->
+      acc * Enum.at(signature, i)
+    end)
+  end
+
+  defp bit_positions(mask) do
+    do_bit_positions(mask, 0, [])
+  end
+
+  defp do_bit_positions(0, _i, acc) do
+    Enum.reverse(acc)
+  end
+
+  defp do_bit_positions(mask, i, acc) do
+    acc =
+      if Bitwise.band(mask, 1) == 1 do
+        [i | acc]
+      else
+        acc
+      end
+
+    do_bit_positions(mask |> Bitwise.bsr(1), i + 1, acc)
+  end
+end
+```
+
+```elixir
+defmodule GeometricAlgebra.Table do
+  alias GeometricAlgebra.Blade
+
+  @doc """
+  Builds the multiplication table for a metric signature.
+
+  Example:
+
+      build([1, 1, 1])
+
+  returns a map containing all blade products.
+  """
+  def build(signature) do
+    blades = blades(signature)
+
+    for a <- blades,
+        b <- blades,
+        {coef, _} = result = Blade.multiply(a, b, signature),
+        coef != 0,
+        into: %{} do
+      {{a, b}, result}
+    end
+  end
+
+  def blades(signature) do
+    0..(blade_count(signature) - 1)
+  end
+
+  def dimension(signature) do
+    length(signature)
+  end
+
+  def blade_count(signature) do
+    1 |> Bitwise.bsl(dimension(signature))
+  end
+end
+```
+
+```elixir
+defmodule GeometricAlgebra.Generator do
+  def gp(table, size) do
+    lhs = Macro.var(:lhs, nil)
+
+    rhs = Macro.var(:rhs, nil)
+
+    terms =
+      for {{a, b}, {coef, result}} <- table,
+          coef != 0 do
+        ca =
+          quote do
+            elem(unquote(lhs), unquote(a))
+          end
+
+        cb =
+          quote do
+            elem(unquote(rhs), unquote(b))
+          end
+
+        term =
+          case coef do
+            1 ->
+              quote do
+                unquote(ca) * unquote(cb)
+              end
+
+            -1 ->
+              quote do
+                -(unquote(ca) * unquote(cb))
+              end
+          end
+
+        {result, term}
+      end
+
+    result =
+      for index <- 0..(size - 1) do
+        terms
+        |> Enum.filter(fn {r, _} -> r == index end)
+        |> Enum.map(fn {_, t} -> t end)
+        |> sum()
+      end
+
+    result_tuple =
+      {:{}, [], result}
+
+    [
+      quote do
+        def gp(%__MODULE__{data: lhs}, %__MODULE{data: rhs}) do
+          %__MODULE__{data: gp(lhs, rhs)}
+        end
+      end,
+      quote do
+        def gp(unquote(lhs), unquote(rhs)) do
+          unquote(result_tuple)
+        end
+      end
+    ]
+  end
+
+  def linear_ops(size) do
+    [
+      add(size),
+      sub(size),
+      scale(size)
+    ]
+  end
+
+  defp add(size) do
+    a = vars(:a, size)
+    b = vars(:b, size)
+
+    result =
+      for i <- 0..(size - 1) do
+        quote do
+          unquote(Enum.at(a, i)) + unquote(Enum.at(b, i))
+        end
+      end
+
+    function(:add, a, b, result)
+  end
+
+  defp sub(size) do
+    a = vars(:a, size)
+    b = vars(:b, size)
+
+    result =
+      for i <- 0..(size - 1) do
+        quote do
+          unquote(Enum.at(a, i)) - unquote(Enum.at(b, i))
+        end
+      end
+
+    function(:sub, a, b, result)
+  end
+
+  defp scale(size) do
+    a = vars(:a, size)
+    s = Macro.var(:s, nil)
+
+    result =
+      for i <- 0..(size - 1) do
+        quote do
+          unquote(s) * unquote(Enum.at(a, i))
+        end
+      end
+
+    quote do
+      def scale(unquote(s), unquote(tuple_ast(a))) do
+        unquote(tuple_ast(result))
+      end
+    end
+  end
+
+  defp vars(prefix, size) do
+    for i <- 0..(size - 1) do
+      Macro.var(:"#{prefix}#{i}", nil)
+    end
+  end
+
+  defp function(name, a, b, result) do
+    [
+      quote do
+        def unquote(name)(
+              %__MODULE__{data: a},
+              %__MODULE__{data: b}
+            ) do
+          %__MODULE__{data: unquote(name)(a, b)}
+        end
+      end,
+      quote do
+        def unquote(name)(
+              unquote(tuple_ast(a)),
+              unquote(tuple_ast(b))
+            ) do
+          unquote(tuple_ast(result))
+        end
+      end
+    ]
+  end
+
+  defp tuple_ast(values) do
+    {:{}, [], values}
+  end
+
+  def inspect_impl(module) do
+    quote do
+      defimpl Inspect, for: unquote(module) do
+        import Inspect.Algebra
+
+        def inspect(value, _opts) do
+          value.data
+          |> Tuple.to_list()
+          |> Enum.with_index()
+          |> Enum.filter(fn {coef, _} -> coef != 0 end)
+          |> format_terms(value)
+        end
+
+        defp format_terms([], _value), do: "0"
+
+        defp format_terms([{coef, blade} | rest], value) do
+          first =
+            format_term(coef, blade, value, true)
+
+          rest =
+            rest
+            |> Enum.map(&format_term(elem(&1, 0), elem(&1, 1), value, false))
+
+          Enum.join([first | rest], " ")
+        end
+
+        defp format_term(coef, blade, value, first?) do
+          name = value.__struct__.basis_name(blade)
+
+          cond do
+            coef == 1 and name != "" ->
+              if first?, do: name, else: "+ #{name}"
+
+            coef == -1 and name != "" ->
+              "- #{name}"
+
+            coef > 0 ->
+              if first? do
+                "#{coef}#{name}"
+              else
+                "+ #{coef}#{name}"
+              end
+
+            true ->
+              "#{coef}#{name}"
+          end
+        end
+      end
+    end
+  end
+
+  def basis_names(size) do
+    for mask <- 0..(size - 1) do
+      name =
+        if mask == 0 do
+          ""
+        else
+          blade =
+            mask
+            |> Integer.digits(2)
+            |> Enum.reverse()
+            |> Enum.with_index()
+            |> Enum.filter(fn {bit, _} -> bit == 1 end)
+            |> Enum.map(fn {_, i} -> Integer.to_string(i + 1) end)
+            |> Enum.join()
+
+          "e" <> blade
+        end
+
+      quote do
+        def basis_name(unquote(mask)), do: unquote(name)
+      end
+    end
+  end
+
+  defp sum([]) do
+    quote do: 0
+  end
+
+  defp sum(xs) do
+    Enum.reduce(xs, fn x, acc ->
+      quote do
+        unquote(acc) + unquote(x)
+      end
+    end)
+  end
+end
+```
+
+```elixir
+defmodule GeometricAlgebra do
+  alias GeometricAlgebra.Table
+
+  defmacro __using__(opts) do
+    signature_ast =
+      opts
+      |> Keyword.fetch!(:signature)
+
+    {signature, _} = Code.eval_quoted(signature_ast, [], __CALLER__)
+    signature = signature |> Tuple.to_list()
+
+    table = Table.build(signature)
+
+    dimension = length(signature)
+    size = Bitwise.bsl(1, dimension)
+
+    gp =
+      GeometricAlgebra.Generator.gp(table, size)
+
+    linear_ops =
+      GeometricAlgebra.Generator.linear_ops(size)
+
+    inspect = GeometricAlgebra.Generator.inspect_impl(__CALLER__.module)
+    basis_names = GeometricAlgebra.Generator.basis_names(size)
+
+    quote do
+      defstruct [:data]
+
+      def new(data) when is_tuple(data) and tuple_size(data) == unquote(size) do
+        %__MODULE__{data: data}
+      end
+
+      @signature unquote(signature)
+      @table unquote(Macro.escape(table))
+      @size unquote(size)
+
+      def dimension do
+        length(@signature)
+      end
+
+      def signature do
+        @signature
+      end
+
+      unquote_splicing(gp)
+
+      unquote_splicing(linear_ops)
+
+      unquote(inspect)
+
+      unquote_splicing(basis_names)
+    end
+  end
+end
+```
+
+## Example
+
+```elixir
+ExUnit.start()
+```
+
+```elixir
+defmodule PGA2D do
+  use GeometricAlgebra,
+    signature: {0,1,1}
+end
+```
+
+```elixir
+defmodule PGA3 do
+  use GeometricAlgebra,
+    signature: {1,1,0}
+end
+```
+
+```elixir
+defmodule PGATest do
+  use ExUnit.Case
+
+  test "dimension" do
+    assert PGA2D.dimension() == 3
+
+    assert PGA3.dimension() == 3
+  end
+
+  test "multiply" do
+    assert GeometricAlgebra.Blade.multiply(1, 1, [1, 1, 0]) == {1, 0}
+  end
+
+  test "blades" do
+    # e1 * e2 = e12
+    assert GeometricAlgebra.Blade.multiply(1, 2, [1, 1, 0]) == {1, 3}
+
+    # e2 * e1 = -e12
+    assert GeometricAlgebra.Blade.multiply(2, 1, [1, 1, 0]) == {-1, 3}
+
+    # e3 * e3 = 0
+    assert GeometricAlgebra.Blade.multiply(4, 4, [1, 1, 0]) == {0, 0}
+  end
+
+  test "table" do
+    table = GeometricAlgebra.Table.build([1, 1, 0])
+    table2 = GeometricAlgebra.Table.build([1, 1, 1])
+
+    assert table[{1, 1}] == {1, 0}
+    assert table[{1, 2}] == {1, 3}
+    assert table[{2, 1}] == {-1, 3}
+
+    assert table2[{1, 2}] == {1, 3}
+  end
+
+  test "PGA3 metric" do
+    zero = {0, 0, 0, 0, 0, 0, 0, 0}
+
+    one = {1, 0, 0, 0, 0, 0, 0, 0}
+
+    e2 = {0, 0, 1, 0, 0, 0, 0, 0}
+    e3 = {0, 0, 0, 0, 1, 0, 0, 0}
+
+    e1 = {0, 1, 0, 0, 0, 0, 0, 0}
+    assert PGA3.gp(e1, e1) == one
+    assert PGA3.gp(e2, e2) == one
+    assert PGA3.gp(e3, e3) == zero
+  end
+
+  test "basis vectors anticommute" do
+    e1 = {0, 1, 0, 0, 0, 0, 0, 0}
+    e2 = {0, 0, 1, 0, 0, 0, 0, 0}
+
+    assert PGA3.gp(e1, e2) ==
+             {0, 0, 0, 1, 0, 0, 0, 0}
+
+    assert PGA3.gp(e2, e1) ==
+             {0, 0, 0, -1, 0, 0, 0, 0}
+  end
+
+  test "multivector multiplication" do
+    # 1 + e1
+    a = {1, 1, 0, 0, 0, 0, 0, 0}
+    # 1 + e2
+    b = {1, 0, 1, 0, 0, 0, 0, 0}
+
+    assert PGA3.gp(a, b) ==
+             {1, 1, 1, 1, 0, 0, 0, 0}
+  end
+
+  test "identity" do
+    one = {1, 0, 0, 0, 0, 0, 0, 0}
+
+    for i <- 0..7 do
+      x = List.to_tuple(for j <- 0..7, do: if(i == j, do: 1, else: 0))
+
+      assert PGA3.gp(one, x) == x
+      assert PGA3.gp(x, one) == x
+    end
+  end
+
+  test "associativity" do
+    blades =
+      for i <- 0..7 do
+        List.to_tuple(for j <- 0..7, do: if(i == j, do: 1, else: 0))
+      end
+
+    for a <- blades,
+        b <- blades,
+        c <- blades do
+      assert PGA3.gp(PGA3.gp(a, b), c) ==
+               PGA3.gp(a, PGA3.gp(b, c))
+    end
+  end
+
+  test "left distributivity" do
+    a = {1, 1, 0, 2, 0, 0, 0, 0}
+    b = {0, 1, 3, 0, 0, 0, 0, 0}
+    c = {2, 0, 1, 0, 0, 0, 0, 0}
+
+    left =
+      PGA3.gp(
+        tuple_add(a, b),
+        c
+      )
+
+    right =
+      tuple_add(
+        PGA3.gp(a, c),
+        PGA3.gp(b, c)
+      )
+
+    assert left == right
+  end
+
+  test "random associativity" do
+    for _ <- 1..100 do
+      a = random_mv()
+      b = random_mv()
+      c = random_mv()
+
+      assert PGA3.gp(PGA3.gp(a, b), c) ==
+               PGA3.gp(a, PGA3.gp(b, c))
+    end
+  end
+
+  test "addition" do
+    a = {1, 2, 3, 4, 0, 0, 0, 0}
+    b = {5, 6, 7, 8, 1, 2, 3, 4}
+
+    assert PGA3.add(a, b) ==
+             {6, 8, 10, 12, 1, 2, 3, 4}
+  end
+
+  test "subtraction" do
+    a = {1, 2, 3, 4, 0, 0, 0, 0}
+    b = {5, 6, 7, 8, 1, 2, 3, 4}
+
+    assert PGA3.sub(a, b) ==
+             {-4, -4, -4, -4, -1, -2, -3, -4}
+  end
+
+  test "scalar multiplication" do
+    a = {1, -2, 3, -4, 5, -6, 7, -8}
+
+    assert PGA3.scale(3, a) ==
+             {3, -6, 9, -12, 15, -18, 21, -24}
+
+    assert PGA3.scale(0, a) ==
+             {0, 0, 0, 0, 0, 0, 0, 0}
+  end
+
+  test "geometric product linearity" do
+    # 1 + e1
+    a = {1, 1, 0, 0, 0, 0, 0, 0}
+    # 1 + e2
+    b = {1, 0, 1, 0, 0, 0, 0, 0}
+    # e3
+    c = {0, 0, 0, 0, 1, 0, 0, 0}
+
+    assert PGA3.gp(a, b) ==
+             {1, 1, 1, 1, 0, 0, 0, 0}
+
+    assert PGA3.gp(c, a) ==
+             {0, 0, 0, 0, 1, -1, 0, 0}
+  end
+
+  test "gp distributes over addition" do
+    a = {1, 2, 3, 4, 5, 6, 7, 8}
+    b = {2, 3, 4, 5, 6, 7, 8, 9}
+    c = {9, 8, 7, 6, 5, 4, 3, 2}
+
+    assert PGA3.gp(PGA3.add(a, b), c) ==
+             PGA3.add(PGA3.gp(a, c), PGA3.gp(b, c))
+  end
+
+  test "inspect" do
+    a = PGA3.new({0, 1, 0, 0, 1, 0, 0, 0})
+    b = PGA3.new({0, 0, 1, 1, 0, 0, 0, 0})
+
+    assert PGA3.add(a, b) |> PGA3.gp(a) |> inspect == "1 - e2 - e12 + e23 + e123"
+  end
+
+  test "scalars" do
+    a = PGA3.new({1, 0, 0, 0, 0, 0, 0, 0})
+    b = PGA3.new({1, 0, 0, 0, 0, 0, 0, 0})
+
+    assert PGA3.add(a, b) |> inspect == "2"
+    assert PGA3.gp(a, b) |> inspect == "1"
+  end
+
+  defp tuple_add(a, b) do
+    Tuple.to_list(a)
+    |> Enum.zip(Tuple.to_list(b))
+    |> Enum.map(fn {x, y} -> x + y end)
+    |> List.to_tuple()
+  end
+
+  defp random_mv do
+    List.duplicate(0, 8)
+    |> Enum.map(fn _ -> :rand.uniform(11) - 6 end)
+    |> List.to_tuple()
+  end
+end
+
+ExUnit.run()
+```
