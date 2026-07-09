@@ -238,6 +238,10 @@ defmodule GeometricAlgebra.Generator do
       end
 
     quote do
+      def scale(unquote(s), %__MODULE__{data: d}) do
+        %__MODULE__{data: scale(unquote(s), d)}
+      end
+
       def scale(unquote(s), unquote(tuple_ast(a))) do
         unquote(tuple_ast(result))
       end
@@ -269,10 +273,6 @@ defmodule GeometricAlgebra.Generator do
         end
       end
     ]
-  end
-
-  defp tuple_ast(values) do
-    {:{}, [], values}
   end
 
   def inspect_impl(module) do
@@ -350,6 +350,433 @@ defmodule GeometricAlgebra.Generator do
     end
   end
 
+  def blade_indices(size) do
+    blade_count = Bitwise.bsl(1, size)
+
+    for mask <- 0..(blade_count - 1), into: %{} do
+      {blade_atom(mask, size), mask}
+    end
+  end
+
+  defp blade_atom(0, _size), do: :scalar
+
+  defp blade_atom(mask, size) do
+    suffix =
+      for i <- 0..(size - 1),
+          Bitwise.band(mask, Bitwise.bsl(1, i)) != 0 do
+        Integer.to_string(i + 1)
+      end
+      |> Enum.join()
+
+    String.to_atom("e" <> suffix)
+  end
+
+  def reverse(size) do
+    a = vars(:a, size)
+
+    result =
+      for mask <- 0..(size - 1) do
+        sign = reverse_sign(blade_grade(mask))
+
+        if sign == 1 do
+          Enum.at(a, mask)
+        else
+          quote do
+            -unquote(Enum.at(a, mask))
+          end
+        end
+      end
+
+    quote do
+      def reverse(%__MODULE__{data: d}) do
+        %__MODULE__{data: reverse(d)}
+      end
+
+      def reverse(unquote(tuple_ast(a))) do
+        unquote(tuple_ast(result))
+      end
+    end
+  end
+
+  def grade(dimension) do
+    blade_count = Bitwise.bsl(1, dimension)
+
+    clauses =
+      for wanted_grade <- 0..dimension do
+        vars =
+          for mask <- 0..(blade_count - 1) do
+            if blade_grade(mask) == wanted_grade do
+              Macro.var(:"a#{mask}", nil)
+            else
+              nil
+            end
+          end
+
+        result =
+          for mask <- 0..(blade_count - 1) do
+            if blade_grade(mask) == wanted_grade do
+              Enum.at(vars, mask)
+            else
+              quote do
+                0
+              end
+            end
+          end
+
+        quote do
+          def grade(unquote(wanted_grade), unquote(tuple_ast(vars))) do
+            unquote(tuple_ast(result))
+          end
+        end
+      end
+
+    quote do
+      def grade(g, %__MODULE__{data: d}) do
+        %__MODULE__{data: grade(g, d)}
+      end
+
+      unquote_splicing(clauses)
+
+      def grade(_, _) do
+        raise ArgumentError, "invalid grade"
+      end
+    end
+  end
+
+  def wedge(dimension, signature) do
+    blade_count = Bitwise.bsl(1, dimension)
+
+    lhs = vars(:lhs, blade_count)
+    rhs = vars(:rhs, blade_count)
+
+    terms =
+      for a <- 0..(blade_count - 1),
+          b <- 0..(blade_count - 1),
+          Bitwise.band(a, b) == 0 do
+        {sign, result} =
+          GeometricAlgebra.Blade.multiply(
+            a,
+            b,
+            signature
+          )
+
+        ca = Enum.at(lhs, a)
+        cb = Enum.at(rhs, b)
+
+        term =
+          case sign do
+            1 ->
+              quote do
+                unquote(ca) * unquote(cb)
+              end
+
+            -1 ->
+              quote do
+                -(unquote(ca) * unquote(cb))
+              end
+          end
+
+        {result, term}
+      end
+
+    result =
+      for index <- 0..(blade_count - 1) do
+        terms
+        |> Enum.filter(fn {r, _} -> r == index end)
+        |> Enum.map(fn {_, t} -> t end)
+        |> sum()
+      end
+
+    quote do
+      def wedge(%__MODULE__{data: a}, %__MODULE__{data: b}) do
+        %__MODULE__{data: wedge(a, b)}
+      end
+
+      def wedge(unquote(tuple_ast(lhs)), unquote(tuple_ast(rhs))) do
+        unquote(tuple_ast(result))
+      end
+    end
+  end
+
+  def inner(signature) do
+    dimension = length(signature)
+    blade_count = Bitwise.bsl(1, dimension)
+
+    lhs = vars(:lhs, blade_count)
+    rhs = vars(:rhs, blade_count)
+
+    terms =
+      for a <- 0..(blade_count - 1),
+          b <- 0..(blade_count - 1) do
+        {coef, result} =
+          GeometricAlgebra.Blade.multiply(
+            a,
+            b,
+            signature
+          )
+
+        if coef != 0 and
+             blade_grade(result) ==
+               abs(blade_grade(a) - blade_grade(b)) do
+          ca = Enum.at(lhs, a)
+          cb = Enum.at(rhs, b)
+
+          term =
+            case coef do
+              1 ->
+                quote do
+                  unquote(ca) * unquote(cb)
+                end
+
+              -1 ->
+                quote do
+                  -(unquote(ca) * unquote(cb))
+                end
+            end
+
+          {result, term}
+        else
+          nil
+        end
+      end
+      |> Enum.reject(&is_nil/1)
+
+    result =
+      for index <- 0..(blade_count - 1) do
+        terms
+        |> Enum.filter(fn {r, _} -> r == index end)
+        |> Enum.map(fn {_, t} -> t end)
+        |> sum()
+      end
+
+    quote do
+      def inner(%__MODULE__{data: a}, %__MODULE__{data: b}) do
+        %__MODULE__{data: inner(a, b)}
+      end
+
+      def inner(unquote(tuple_ast(lhs)), unquote(tuple_ast(rhs))) do
+        unquote(tuple_ast(result))
+      end
+    end
+  end
+
+  def scalar_product(dimension, signature) do
+    blade_count = Bitwise.bsl(1, dimension)
+
+    raw_terms =
+      for a <- 0..(blade_count - 1),
+          b <- 0..(blade_count - 1) do
+        {coef, result} =
+          GeometricAlgebra.Blade.multiply(
+            a,
+            b,
+            signature
+          )
+
+        if coef != 0 and result == 0 do
+          {a, b, coef}
+        else
+          nil
+        end
+      end
+      |> Enum.reject(&is_nil/1)
+
+    used_lhs =
+      raw_terms
+      |> Enum.map(fn {a, _, _} -> a end)
+      |> MapSet.new()
+
+    used_rhs =
+      raw_terms
+      |> Enum.map(fn {_, b, _} -> b end)
+      |> MapSet.new()
+
+    lhs =
+      for a <- 0..(blade_count - 1) do
+        if MapSet.member?(used_lhs, a) do
+          Macro.var(:"lhs#{a}", nil)
+        else
+          nil
+        end
+      end
+
+    rhs =
+      for b <- 0..(blade_count - 1) do
+        if MapSet.member?(used_rhs, b) do
+          Macro.var(:"rhs#{b}", nil)
+        else
+          nil
+        end
+      end
+
+    terms =
+      for {a, b, coef} <- raw_terms do
+        ca = Enum.at(lhs, a)
+        cb = Enum.at(rhs, b)
+
+        case coef do
+          1 ->
+            quote do
+              unquote(ca) * unquote(cb)
+            end
+
+          -1 ->
+            quote do
+              -(unquote(ca) * unquote(cb))
+            end
+        end
+      end
+
+    quote do
+      def scalar_product(%__MODULE__{data: a}, %__MODULE__{data: b}) do
+        scalar_product(a, b)
+      end
+
+      def scalar_product(unquote(tuple_ast(lhs)), unquote(tuple_ast(rhs))) do
+        unquote(sum(terms))
+      end
+    end
+  end
+
+  def scalar?(dimension) do
+    blade_count = Bitwise.bsl(1, dimension)
+
+    a =
+      for i <- 0..(blade_count - 1) do
+        if i == 0 do
+          nil
+        else
+          Macro.var(:"a#{i}", nil)
+        end
+      end
+
+    checks =
+      for i <- 1..(blade_count - 1) do
+        quote do
+          unquote(Enum.at(a, i)) == 0
+        end
+      end
+
+    quote do
+      def scalar?(%__MODULE__{data: d}) do
+        scalar?(d)
+      end
+
+      def scalar?(unquote(tuple_ast(a))) do
+        unquote(
+          Enum.reduce(checks, quote(do: true), fn check, acc ->
+            quote do
+              unquote(acc) and unquote(check)
+            end
+          end)
+        )
+      end
+    end
+  end
+
+  def zero?(dimension) do
+    blade_count = Bitwise.bsl(1, dimension)
+
+    a =
+      for i <- 0..(blade_count - 1) do
+        Macro.var(:"a#{i}", nil)
+      end
+
+    checks =
+      for i <- 0..(blade_count - 1) do
+        quote do
+          unquote(Enum.at(a, i)) == 0
+        end
+      end
+
+    condition =
+      Enum.reduce(checks, quote(do: true), fn check, acc ->
+        quote do
+          unquote(acc) and unquote(check)
+        end
+      end)
+
+    quote do
+      def zero?(%__MODULE__{data: d}) do
+        zero?(d)
+      end
+
+      def zero?(unquote(tuple_ast(a))) do
+        unquote(condition)
+      end
+    end
+  end
+
+  def grades(dimension) do
+    blade_count = Bitwise.bsl(1, dimension)
+
+    a =
+      for i <- 0..(blade_count - 1) do
+        Macro.var(:"a#{i}", nil)
+      end
+
+    grade_checks =
+      for g <- 0..dimension do
+        masks =
+          for mask <- 0..(blade_count - 1),
+              blade_grade(mask) == g do
+            mask
+          end
+
+        condition =
+          for mask <- masks do
+            quote do
+              unquote(Enum.at(a, mask)) != 0
+            end
+          end
+          |> Enum.reduce(quote(do: false), fn check, acc ->
+            quote do
+              unquote(acc) or unquote(check)
+            end
+          end)
+
+        {g, condition}
+      end
+
+    body =
+      for {g, condition} <- grade_checks do
+        quote do
+          if unquote(condition) do
+            [unquote(g)]
+          else
+            []
+          end
+        end
+      end
+
+    quote do
+      def grades(%__MODULE__{data: d}) do
+        grades(d)
+      end
+
+      def grades(unquote(tuple_ast(a))) do
+        [
+          unquote_splicing(body)
+        ]
+        |> List.flatten()
+      end
+    end
+  end
+
+  defp blade_grade(mask) do
+    mask
+    |> Integer.digits(2)
+    |> Enum.sum()
+  end
+
+  defp reverse_sign(k) do
+    if rem(div(k * (k - 1), 2), 2) == 0 do
+      1
+    else
+      -1
+    end
+  end
+
   defp sum([]) do
     quote do: 0
   end
@@ -360,6 +787,16 @@ defmodule GeometricAlgebra.Generator do
         unquote(acc) + unquote(x)
       end
     end)
+  end
+
+  defp tuple_ast(values) do
+    values =
+      Enum.map(values, fn
+        nil -> quote do: _
+        value -> value
+      end)
+
+    {:{}, [], values}
   end
 end
 ```
@@ -384,22 +821,64 @@ defmodule GeometricAlgebra do
     gp =
       GeometricAlgebra.Generator.gp(table, size)
 
+    wedge =
+      GeometricAlgebra.Generator.wedge(dimension, signature)
+
+    scalar_product =
+      GeometricAlgebra.Generator.scalar_product(dimension, signature)
+
     linear_ops =
       GeometricAlgebra.Generator.linear_ops(size)
 
+    reverse =
+      GeometricAlgebra.Generator.reverse(size)
+
+    grade =
+      GeometricAlgebra.Generator.grade(dimension)
+
+    inner =
+      GeometricAlgebra.Generator.inner(signature)
+
+    scalar =
+      GeometricAlgebra.Generator.scalar?(dimension)
+
+    zero =
+      GeometricAlgebra.Generator.zero?(dimension)
+
+    grades =
+      GeometricAlgebra.Generator.grades(dimension)
+
     inspect = GeometricAlgebra.Generator.inspect_impl(__CALLER__.module)
     basis_names = GeometricAlgebra.Generator.basis_names(size)
+    blade_indices = GeometricAlgebra.Generator.blade_indices(size)
 
     quote do
       defstruct [:data]
+
+      @signature unquote(signature)
+      @table unquote(Macro.escape(table))
+      @size unquote(size)
+      @blade_indices unquote(Macro.escape(blade_indices))
+
+      def new(basis \\ [])
 
       def new(data) when is_tuple(data) and tuple_size(data) == unquote(size) do
         %__MODULE__{data: data}
       end
 
-      @signature unquote(signature)
-      @table unquote(Macro.escape(table))
-      @size unquote(size)
+      def new(fields) when is_list(fields) do
+        coeffs = :erlang.make_tuple(@size, 0)
+
+        coeffs =
+          Enum.reduce(fields, coeffs, fn {blade, coef}, acc ->
+            index =
+              Map.fetch!(@blade_indices, blade)
+
+            put_elem(acc, index, coef)
+          end)
+
+        %__MODULE__{data: coeffs}
+      end
 
       def dimension do
         length(@signature)
@@ -410,10 +889,41 @@ defmodule GeometricAlgebra do
       end
 
       unquote_splicing(gp)
+      unquote(wedge)
 
       unquote_splicing(linear_ops)
+      unquote(reverse)
+      unquote(grade)
+      unquote(zero)
+      unquote(grades)
+      unquote(inner)
+      unquote(scalar_product)
 
       unquote(inspect)
+
+      def inverse(%__MODULE__{} = a) do
+        rev = reverse(a)
+
+        product = gp(a, rev)
+
+        unless scalar?(product) do
+          raise ArgumentError,
+                "multivector is not invertible by reverse formula"
+        end
+
+        denominator =
+          product.data
+          |> elem(0)
+
+        if denominator == 0 do
+          raise ArgumentError,
+                "multivector is not invertible"
+        end
+
+        scale(1 / denominator, rev)
+      end
+
+      unquote(scalar)
 
       unquote_splicing(basis_names)
     end
@@ -626,11 +1136,343 @@ defmodule PGATest do
   end
 
   test "scalars" do
-    a = PGA3.new({1, 0, 0, 0, 0, 0, 0, 0})
-    b = PGA3.new({1, 0, 0, 0, 0, 0, 0, 0})
+    a = PGA3.new(scalar: 1)
+    b = PGA3.new(scalar: 2)
 
-    assert PGA3.add(a, b) |> inspect == "2"
-    assert PGA3.gp(a, b) |> inspect == "1"
+    assert PGA3.add(a, b) |> inspect == "3"
+    assert PGA3.gp(a, b) |> inspect == "2"
+  end
+
+  test "named new" do
+    a = PGA3.new(e1: 1, e3: 1)
+    b = PGA3.new(e2: 1, e12: 1)
+
+    assert PGA3.add(a, b) |> PGA3.gp(a) |> inspect == "1 - e2 - e12 + e23 + e123"
+
+    assert PGA3.new({1, 2, 3, 4, 5, 6, 7, 8}) ==
+             PGA3.new(scalar: 1, e1: 2, e2: 3, e12: 4, e3: 5, e13: 6, e23: 7, e123: 8)
+  end
+
+  test "reverse" do
+    e1 =
+      PGA3.new(e1: 1)
+
+    e12 =
+      PGA3.new(e12: 1)
+
+    e123 =
+      PGA3.new(e123: 1)
+
+    assert PGA3.reverse(e1) ==
+             e1
+
+    assert PGA3.reverse(e12) ==
+             PGA3.new(e12: -1)
+
+    assert PGA3.reverse(e123) ==
+             PGA3.new(e123: -1)
+  end
+
+  test "grade extraction" do
+    a =
+      PGA3.new(
+        scalar: 1,
+        e1: 2,
+        e12: 3,
+        e3: 4,
+        e123: 5
+      )
+
+    assert PGA3.grade(0, a) ==
+             PGA3.new(scalar: 1)
+
+    assert PGA3.grade(1, a) ==
+             PGA3.new(e1: 2, e3: 4)
+
+    assert PGA3.grade(2, a) ==
+             PGA3.new(e12: 3)
+
+    assert PGA3.grade(3, a) ==
+             PGA3.new(e123: 5)
+  end
+
+  test "grade of homogeneous blade" do
+    e12 = PGA3.new(e12: 7)
+
+    assert PGA3.grade(2, e12) == e12
+    assert PGA3.grade(1, e12) == PGA3.new()
+  end
+
+  test "grade preserves zero" do
+    zero = PGA3.new()
+
+    for g <- 0..3 do
+      assert PGA3.grade(g, zero) == zero
+    end
+  end
+
+  test "grade is a projection" do
+    a =
+      PGA3.new(
+        scalar: 1,
+        e1: 2,
+        e23: 3,
+        e123: 4
+      )
+
+    assert PGA3.grade(1, PGA3.grade(1, a)) ==
+             PGA3.grade(1, a)
+  end
+
+  test "invalid grade raises" do
+    assert_raise ArgumentError, fn ->
+      PGA3.grade(4, PGA3.new(e1: 1))
+    end
+  end
+
+  test "outer product of basis vectors" do
+    e1 = PGA3.new(e1: 1)
+    e2 = PGA3.new(e2: 1)
+
+    assert PGA3.wedge(e1, e2) ==
+             PGA3.new(e12: 1)
+
+    assert PGA3.wedge(e2, e1) ==
+             PGA3.new(e12: -1)
+  end
+
+  test "outer product removes repeated vectors" do
+    e1 = PGA3.new(e1: 1)
+
+    assert PGA3.wedge(e1, e1) ==
+             PGA3.new()
+  end
+
+  test "outer product of higher blades" do
+    e12 = PGA3.new(e12: 1)
+    e3 = PGA3.new(e3: 1)
+
+    assert PGA3.wedge(e12, e3) ==
+             PGA3.new(e123: 1)
+  end
+
+  test "outer product is antisymmetric for vectors" do
+    e1 = PGA3.new(e1: 1)
+    e2 = PGA3.new(e2: 1)
+
+    assert PGA3.wedge(e1, e2) == PGA3.scale(-1, PGA3.wedge(e2, e1))
+  end
+
+  test "inner product of vectors" do
+    e1 = PGA3.new(e1: 1)
+    e2 = PGA3.new(e2: 1)
+    e3 = PGA3.new(e3: 1)
+
+    assert PGA3.inner(e1, e1) ==
+             PGA3.new(scalar: 1)
+
+    assert PGA3.inner(e2, e2) ==
+             PGA3.new(scalar: 1)
+
+    assert PGA3.inner(e3, e3) ==
+             PGA3.new()
+
+    assert PGA3.inner(e1, e2) ==
+             PGA3.new()
+  end
+
+  test "vector bivector contraction" do
+    e1 = PGA3.new(e1: 1)
+    e12 = PGA3.new(e12: 1)
+
+    assert PGA3.inner(e1, e12) ==
+             PGA3.new(e2: 1)
+  end
+
+  test "inner product grade" do
+    a = PGA3.new(e12: 1)
+    b = PGA3.new(e123: 1)
+
+    assert PGA3.inner(a, b) ==
+             PGA3.new(e3: -1)
+  end
+
+  test "scalar product" do
+    e1 = PGA3.new(e1: 1)
+    e2 = PGA3.new(e2: 1)
+    e3 = PGA3.new(e3: 1)
+
+    assert PGA3.scalar_product(e1, e1) == 1
+    assert PGA3.scalar_product(e2, e2) == 1
+    assert PGA3.scalar_product(e3, e3) == 0
+
+    assert PGA3.scalar_product(e1, e2) == 0
+  end
+
+  test "scalar product bivectors" do
+    e12 = PGA3.new(e12: 1)
+
+    assert PGA3.scalar_product(e12, e12) == -1
+  end
+
+  test "inverse of bivector" do
+    e12 = PGA3.new(e12: 1)
+
+    assert PGA3.gp(e12, PGA3.inverse(e12)) ==
+             PGA3.new(scalar: 1)
+  end
+
+  test "inverse of vector" do
+    e1 = PGA3.new(e1: 1)
+    e2 = PGA3.new(e2: 1)
+
+    assert PGA3.gp(e1, PGA3.inverse(e1)) ==
+             PGA3.new(scalar: 1)
+
+    assert PGA3.gp(e2, PGA3.inverse(e2)) ==
+             PGA3.new(scalar: 1)
+  end
+
+  test "inverse of scalar" do
+    a = PGA3.new(scalar: 5)
+
+    assert PGA3.inverse(a) ==
+             PGA3.new(scalar: 0.2)
+  end
+
+  test "pseudoscalar is not invertible" do
+    i = PGA3.new(e123: 1)
+
+    assert PGA3.scalar_product(i, PGA3.reverse(i)) == 0
+  end
+
+  test "inverse rejects null vectors" do
+    e3 = PGA3.new(e3: 1)
+
+    assert_raise ArgumentError, fn ->
+      PGA3.inverse(e3)
+    end
+  end
+
+  test "inverse rejects null pseudoscalar" do
+    i = PGA3.new(e123: 1)
+
+    assert_raise ArgumentError, fn ->
+      PGA3.inverse(i)
+    end
+  end
+
+  test "inverse property" do
+    for a <- [
+          PGA3.new(e1: 1),
+          PGA3.new(e2: 1),
+          PGA3.new(e12: 1),
+          PGA3.new(scalar: 7)
+        ] do
+      assert PGA3.gp(a, PGA3.inverse(a)) ==
+               PGA3.new(scalar: 1)
+    end
+  end
+
+  test "inverse property right multiplication" do
+    a = PGA3.new(e12: 1)
+
+    assert PGA3.gp(PGA3.inverse(a), a) ==
+             PGA3.new(scalar: 1)
+  end
+
+  test "scalar?" do
+    assert PGA3.scalar?(PGA3.new(scalar: 5))
+
+    refute PGA3.scalar?(PGA3.new(e1: 1))
+    refute PGA3.scalar?(PGA3.new(e12: 1))
+
+    assert PGA3.scalar?(PGA3.new())
+  end
+
+  test "geometric product identity" do
+    one = PGA3.new(scalar: 1)
+
+    for a <- [
+          PGA3.new(e1: 1),
+          PGA3.new(e2: 1),
+          PGA3.new(e12: 1),
+          PGA3.new(e1: 2, e23: 3)
+        ] do
+      assert PGA3.gp(one, a) == a
+      assert PGA3.gp(a, one) == a
+    end
+  end
+
+  test "reverse is involution" do
+    for a <- [
+          PGA3.new(e1: 1, e12: 2),
+          PGA3.new(e123: 1),
+          PGA3.new(scalar: 5)
+        ] do
+      assert PGA3.reverse(PGA3.reverse(a)) == a
+    end
+  end
+
+  test "scalar product symmetry" do
+    a = PGA3.new(e1: 2, e12: 3)
+    b = PGA3.new(e2: 4, e23: 5)
+
+    assert PGA3.scalar_product(a, b) ==
+             PGA3.scalar_product(b, a)
+  end
+
+  test "multivector associativity" do
+    a = PGA3.new(e1: 2, e12: -1)
+    b = PGA3.new(e2: 3, e23: 4)
+    c = PGA3.new(e3: 5, e123: 1)
+
+    assert PGA3.gp(PGA3.gp(a, b), c) ==
+             PGA3.gp(a, PGA3.gp(b, c))
+  end
+
+  test "reverse reverses product order" do
+    a = PGA3.new(e1: 1, e12: 2)
+    b = PGA3.new(e2: 3, e23: 4)
+
+    assert PGA3.reverse(PGA3.gp(a, b)) ==
+             PGA3.gp(PGA3.reverse(b), PGA3.reverse(a))
+  end
+
+  test "inner product vs grade" do
+    e1 = PGA3.new(e1: 1)
+    e12 = PGA3.new(e12: 1)
+
+    result = PGA3.inner(e1, e12)
+
+    assert PGA3.grade(1, result) == result
+  end
+
+  test "inner product vector bivector" do
+    e1 = PGA3.new(e1: 1)
+    e12 = PGA3.new(e12: 1)
+
+    assert PGA3.inner(e1, e12) ==
+             PGA3.new(e2: 1)
+  end
+
+  test "zero?" do
+    assert PGA3.zero?(PGA3.new())
+
+    refute PGA3.zero?(PGA3.new(e1: 1))
+    refute PGA3.zero?(PGA3.new(e1: 1, e12: 2))
+  end
+
+  test "grades" do
+    assert PGA3.grades(PGA3.new()) == []
+
+    assert PGA3.grades(PGA3.new(scalar: 1)) == [0]
+
+    assert PGA3.grades(PGA3.new(e1: 1)) == [1]
+
+    assert PGA3.grades(PGA3.new(e12: 1)) == [2]
+
+    assert PGA3.grades(PGA3.new(e1: 1, e12: 1)) == [1, 2]
   end
 
   defp tuple_add(a, b) do
