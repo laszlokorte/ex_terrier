@@ -992,6 +992,11 @@ defmodule GeometricAlgebra do
         %__MODULE__{data: coeffs}
       end
 
+      def coefficient(%__MODULE__{data: data}, blade) do
+        index = Map.fetch!(@blade_indices, blade)
+        elem(data, index)
+      end
+
       def size() do
         @size
       end
@@ -1070,6 +1075,10 @@ defmodule GeometricAlgebra do
 
       def norm(%__MODULE__{} = a) do
         :math.sqrt(abs(squared_norm(a)))
+      end
+
+      def scalar_part(%__MODULE__{data: data}) do
+        elem(data, 0)
       end
 
       def commutator(a, b) do
@@ -1166,6 +1175,27 @@ defmodule PGA3 do
 
   def direction(line) do
     meet(line, new(e4: 1))
+  end
+
+  def point_coordinates(p) do
+    w = coefficient(p, :e123)
+
+    {
+      coefficient(p, :e234) / w,
+      -coefficient(p, :e134) / w,
+      coefficient(p, :e124) / w
+    }
+  end
+
+  def distance(a, b) do
+    {ax, ay, az} = point_coordinates(a)
+    {bx, by, bz} = point_coordinates(b)
+
+    dx = ax - bx
+    dy = ay - by
+    dz = az - bz
+
+    :math.sqrt(dx * dx + dy * dy + dz * dz)
   end
 
   def homogeneous_grade(x) do
@@ -2112,6 +2142,13 @@ defmodule PGATest do
              PGA3.direction(l1),
              PGA3.direction(l2)
            )
+  end
+
+  test "point distance" do
+    a = PGA3.point(0, 0, 0)
+    b = PGA3.point(3, 4, 0)
+
+    assert PGA3.distance(a, b) == 5.0
   end
 
   defp tuple_add(a, b) do
