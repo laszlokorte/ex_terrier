@@ -350,11 +350,11 @@ defmodule GeometricAlgebra.Generator do
     end
   end
 
-  def blade_indices(size) do
-    blade_count = Bitwise.bsl(1, size)
+  def blade_indices(dimensions) do
+    blade_count = Bitwise.bsl(1, dimensions)
 
     for mask <- 0..(blade_count - 1), into: %{} do
-      {blade_atom(mask, size), mask}
+      {blade_atom(mask, dimensions), mask}
     end
   end
 
@@ -424,21 +424,21 @@ defmodule GeometricAlgebra.Generator do
           end
 
         quote do
-          def grade(unquote(wanted_grade), unquote(tuple_ast(vars))) do
+          def grade(unquote(tuple_ast(vars)), unquote(wanted_grade)) do
             unquote(tuple_ast(result))
           end
         end
       end
 
     quote do
-      def grade(g, %__MODULE__{data: d}) do
-        %__MODULE__{data: grade(g, d)}
+      def grade(%__MODULE__{data: d}, g) do
+        %__MODULE__{data: grade(d, g)}
       end
 
       unquote_splicing(clauses)
 
-      def grade(_, _) do
-        raise ArgumentError, "invalid grade"
+      def grade(t, r) when is_tuple(t) do
+        raise ArgumentError, "invalid grade #{r}"
       end
     end
   end
@@ -763,6 +763,109 @@ defmodule GeometricAlgebra.Generator do
     end
   end
 
+  def dual(dimension, signature) do
+    blade_count = Bitwise.bsl(1, dimension)
+    full_mask = blade_count - 1
+
+    a = vars(:a, blade_count)
+
+    result =
+      for out_mask <- 0..(blade_count - 1) do
+        terms =
+          for mask <- 0..(blade_count - 1),
+              Bitwise.bxor(mask, full_mask) == out_mask do
+            dual_mask = out_mask
+
+            {sign, _} =
+              GeometricAlgebra.Blade.multiply(mask, dual_mask, signature)
+
+            value = Enum.at(a, mask)
+
+            if sign == 1 do
+              value
+            else
+              quote do
+                -unquote(value)
+              end
+            end
+          end
+
+        sum(terms)
+      end
+
+    quote do
+      def dual(%__MODULE__{data: d}) do
+        %__MODULE__{data: dual(d)}
+      end
+
+      def dual(unquote(tuple_ast(a))) do
+        unquote(tuple_ast(result))
+      end
+    end
+  end
+
+  def max_abs_component(dimension) do
+    blade_count = Bitwise.bsl(1, dimension)
+
+    a = vars(:a, blade_count)
+
+    values =
+      for i <- 0..(blade_count - 1) do
+        quote do
+          abs(unquote(Enum.at(a, i)))
+        end
+      end
+
+    quote do
+      def max_abs_component(%__MODULE__{data: d}) do
+        max_abs_component(d)
+      end
+
+      def max_abs_component(unquote(tuple_ast(a))) do
+        Enum.max([
+          unquote_splicing(values)
+        ])
+      end
+    end
+  end
+
+  def canonical_sign(dimension) do
+    blade_count = Bitwise.bsl(1, dimension)
+
+    a = vars(:a, blade_count)
+
+    clauses =
+      for i <- 0..(blade_count - 1) do
+        value = Enum.at(a, i)
+
+        quote do
+          if unquote(value) != 0 do
+            if unquote(value) < 0 do
+              -1
+            else
+              1
+            end
+          end
+        end
+      end
+
+    quote do
+      def canonical_sign(%__MODULE__{data: d}) do
+        canonical_sign(d)
+      end
+
+      def canonical_sign(unquote(tuple_ast(a))) do
+        result =
+          [
+            unquote_splicing(clauses)
+          ]
+          |> Enum.find(&(&1 != nil))
+
+        result || 1
+      end
+    end
+  end
+
   defp blade_grade(mask) do
     mask
     |> Integer.digits(2)
@@ -833,6 +936,9 @@ defmodule GeometricAlgebra do
     reverse =
       GeometricAlgebra.Generator.reverse(size)
 
+    dual =
+      GeometricAlgebra.Generator.dual(dimension, signature)
+
     grade =
       GeometricAlgebra.Generator.grade(dimension)
 
@@ -848,9 +954,15 @@ defmodule GeometricAlgebra do
     grades =
       GeometricAlgebra.Generator.grades(dimension)
 
+    max_abs =
+      GeometricAlgebra.Generator.max_abs_component(dimension)
+
+    canon_sign =
+      GeometricAlgebra.Generator.canonical_sign(dimension)
+
     inspect = GeometricAlgebra.Generator.inspect_impl(__CALLER__.module)
     basis_names = GeometricAlgebra.Generator.basis_names(size)
-    blade_indices = GeometricAlgebra.Generator.blade_indices(size)
+    blade_indices = GeometricAlgebra.Generator.blade_indices(dimension)
 
     quote do
       defstruct [:data]
@@ -880,6 +992,10 @@ defmodule GeometricAlgebra do
         %__MODULE__{data: coeffs}
       end
 
+      def size() do
+        @size
+      end
+
       def dimension do
         length(@signature)
       end
@@ -893,11 +1009,14 @@ defmodule GeometricAlgebra do
 
       unquote_splicing(linear_ops)
       unquote(reverse)
+      unquote(dual)
       unquote(grade)
+      unquote(max_abs)
       unquote(zero)
       unquote(grades)
       unquote(inner)
       unquote(scalar_product)
+      unquote(canon_sign)
 
       unquote(inspect)
 
@@ -926,6 +1045,39 @@ defmodule GeometricAlgebra do
       unquote(scalar)
 
       unquote_splicing(basis_names)
+
+      def blade?(%__MODULE__{} = a) do
+        length(grades(a)) <= 1
+      end
+
+      def normalize(%__MODULE__{} = a) do
+        unless blade?(a) do
+          raise ArgumentError, "can only normalize blades"
+        end
+
+        max = max_abs_component(a)
+
+        if max == 0 do
+          raise ArgumentError, "cannot normalize zero multivector"
+        end
+
+        scale(canonical_sign(a) / max, a)
+      end
+
+      def squared_norm(%__MODULE__{} = a) do
+        scalar_product(a, reverse(a))
+      end
+
+      def norm(%__MODULE__{} = a) do
+        :math.sqrt(abs(squared_norm(a)))
+      end
+
+      def commutator(a, b) do
+        scale(
+          0.5,
+          sub(gp(a, b), gp(b, a))
+        )
+      end
     end
   end
 end
@@ -945,9 +1097,84 @@ end
 ```
 
 ```elixir
+defmodule PGA2 do
+  use GeometricAlgebra,
+    signature: {1, 1, 0}
+end
+```
+
+```elixir
 defmodule PGA3 do
   use GeometricAlgebra,
-    signature: {1,1,0}
+    signature: {1, 1, 1, 0}
+
+  def point(x, y, z) do
+    new(
+      e123: 1,
+      e234: x,
+      e134: -y,
+      e124: z
+    )
+  end
+
+  def line(a, b) do
+    join(a, b)
+  end
+
+  def plane(a, b, c, d) do
+    new(
+      e1: a,
+      e2: b,
+      e3: c,
+      e4: -d
+    )
+  end
+
+  def join(a, b) do
+    dual(wedge(dual(a), dual(b)))
+  end
+
+  def meet(a, b) do
+    wedge(a, b)
+  end
+
+  def incident?(a, b) do
+    zero?(join(a, b))
+  end
+
+  def contains?(container, object) do
+    zero?(join(container, object))
+  end
+
+  def parallel?(a, b) do
+    ideal?(meet(a, b))
+  end
+
+  def intersects?(a, b) do
+    m = meet(a, b)
+    not zero?(m) and not ideal?(m)
+  end
+
+  def ideal?(x) do
+    zero?(wedge(x, new(e4: 1)))
+  end
+
+  def coincident?(a, b) do
+    homogeneous_grade(a) == homogeneous_grade(b) and
+      normalize(a) == normalize(b)
+  end
+
+  def direction(line) do
+    meet(line, new(e4: 1))
+  end
+
+  def homogeneous_grade(x) do
+    case grades(x) do
+      [g] -> g
+      [] -> nil
+      _ -> nil
+    end
+  end
 end
 ```
 
@@ -958,7 +1185,7 @@ defmodule PGATest do
   test "dimension" do
     assert PGA2D.dimension() == 3
 
-    assert PGA3.dimension() == 3
+    assert PGA2.dimension() == 3
   end
 
   test "multiply" do
@@ -987,7 +1214,7 @@ defmodule PGATest do
     assert table2[{1, 2}] == {1, 3}
   end
 
-  test "PGA3 metric" do
+  test "PGA2 metric" do
     zero = {0, 0, 0, 0, 0, 0, 0, 0}
 
     one = {1, 0, 0, 0, 0, 0, 0, 0}
@@ -996,19 +1223,19 @@ defmodule PGATest do
     e3 = {0, 0, 0, 0, 1, 0, 0, 0}
 
     e1 = {0, 1, 0, 0, 0, 0, 0, 0}
-    assert PGA3.gp(e1, e1) == one
-    assert PGA3.gp(e2, e2) == one
-    assert PGA3.gp(e3, e3) == zero
+    assert PGA2.gp(e1, e1) == one
+    assert PGA2.gp(e2, e2) == one
+    assert PGA2.gp(e3, e3) == zero
   end
 
   test "basis vectors anticommute" do
     e1 = {0, 1, 0, 0, 0, 0, 0, 0}
     e2 = {0, 0, 1, 0, 0, 0, 0, 0}
 
-    assert PGA3.gp(e1, e2) ==
+    assert PGA2.gp(e1, e2) ==
              {0, 0, 0, 1, 0, 0, 0, 0}
 
-    assert PGA3.gp(e2, e1) ==
+    assert PGA2.gp(e2, e1) ==
              {0, 0, 0, -1, 0, 0, 0, 0}
   end
 
@@ -1018,7 +1245,7 @@ defmodule PGATest do
     # 1 + e2
     b = {1, 0, 1, 0, 0, 0, 0, 0}
 
-    assert PGA3.gp(a, b) ==
+    assert PGA2.gp(a, b) ==
              {1, 1, 1, 1, 0, 0, 0, 0}
   end
 
@@ -1028,8 +1255,8 @@ defmodule PGATest do
     for i <- 0..7 do
       x = List.to_tuple(for j <- 0..7, do: if(i == j, do: 1, else: 0))
 
-      assert PGA3.gp(one, x) == x
-      assert PGA3.gp(x, one) == x
+      assert PGA2.gp(one, x) == x
+      assert PGA2.gp(x, one) == x
     end
   end
 
@@ -1042,8 +1269,8 @@ defmodule PGATest do
     for a <- blades,
         b <- blades,
         c <- blades do
-      assert PGA3.gp(PGA3.gp(a, b), c) ==
-               PGA3.gp(a, PGA3.gp(b, c))
+      assert PGA2.gp(PGA2.gp(a, b), c) ==
+               PGA2.gp(a, PGA2.gp(b, c))
     end
   end
 
@@ -1053,15 +1280,15 @@ defmodule PGATest do
     c = {2, 0, 1, 0, 0, 0, 0, 0}
 
     left =
-      PGA3.gp(
+      PGA2.gp(
         tuple_add(a, b),
         c
       )
 
     right =
       tuple_add(
-        PGA3.gp(a, c),
-        PGA3.gp(b, c)
+        PGA2.gp(a, c),
+        PGA2.gp(b, c)
       )
 
     assert left == right
@@ -1073,8 +1300,8 @@ defmodule PGATest do
       b = random_mv()
       c = random_mv()
 
-      assert PGA3.gp(PGA3.gp(a, b), c) ==
-               PGA3.gp(a, PGA3.gp(b, c))
+      assert PGA2.gp(PGA2.gp(a, b), c) ==
+               PGA2.gp(a, PGA2.gp(b, c))
     end
   end
 
@@ -1082,7 +1309,7 @@ defmodule PGATest do
     a = {1, 2, 3, 4, 0, 0, 0, 0}
     b = {5, 6, 7, 8, 1, 2, 3, 4}
 
-    assert PGA3.add(a, b) ==
+    assert PGA2.add(a, b) ==
              {6, 8, 10, 12, 1, 2, 3, 4}
   end
 
@@ -1090,17 +1317,17 @@ defmodule PGATest do
     a = {1, 2, 3, 4, 0, 0, 0, 0}
     b = {5, 6, 7, 8, 1, 2, 3, 4}
 
-    assert PGA3.sub(a, b) ==
+    assert PGA2.sub(a, b) ==
              {-4, -4, -4, -4, -1, -2, -3, -4}
   end
 
   test "scalar multiplication" do
     a = {1, -2, 3, -4, 5, -6, 7, -8}
 
-    assert PGA3.scale(3, a) ==
+    assert PGA2.scale(3, a) ==
              {3, -6, 9, -12, 15, -18, 21, -24}
 
-    assert PGA3.scale(0, a) ==
+    assert PGA2.scale(0, a) ==
              {0, 0, 0, 0, 0, 0, 0, 0}
   end
 
@@ -1112,10 +1339,10 @@ defmodule PGATest do
     # e3
     c = {0, 0, 0, 0, 1, 0, 0, 0}
 
-    assert PGA3.gp(a, b) ==
+    assert PGA2.gp(a, b) ==
              {1, 1, 1, 1, 0, 0, 0, 0}
 
-    assert PGA3.gp(c, a) ==
+    assert PGA2.gp(c, a) ==
              {0, 0, 0, 0, 1, -1, 0, 0}
   end
 
@@ -1124,58 +1351,58 @@ defmodule PGATest do
     b = {2, 3, 4, 5, 6, 7, 8, 9}
     c = {9, 8, 7, 6, 5, 4, 3, 2}
 
-    assert PGA3.gp(PGA3.add(a, b), c) ==
-             PGA3.add(PGA3.gp(a, c), PGA3.gp(b, c))
+    assert PGA2.gp(PGA2.add(a, b), c) ==
+             PGA2.add(PGA2.gp(a, c), PGA2.gp(b, c))
   end
 
   test "inspect" do
-    a = PGA3.new({0, 1, 0, 0, 1, 0, 0, 0})
-    b = PGA3.new({0, 0, 1, 1, 0, 0, 0, 0})
+    a = PGA2.new({0, 1, 0, 0, 1, 0, 0, 0})
+    b = PGA2.new({0, 0, 1, 1, 0, 0, 0, 0})
 
-    assert PGA3.add(a, b) |> PGA3.gp(a) |> inspect == "1 - e2 - e12 + e23 + e123"
+    assert PGA2.add(a, b) |> PGA2.gp(a) |> inspect == "1 - e2 - e12 + e23 + e123"
   end
 
   test "scalars" do
-    a = PGA3.new(scalar: 1)
-    b = PGA3.new(scalar: 2)
+    a = PGA2.new(scalar: 1)
+    b = PGA2.new(scalar: 2)
 
-    assert PGA3.add(a, b) |> inspect == "3"
-    assert PGA3.gp(a, b) |> inspect == "2"
+    assert PGA2.add(a, b) |> inspect == "3"
+    assert PGA2.gp(a, b) |> inspect == "2"
   end
 
   test "named new" do
-    a = PGA3.new(e1: 1, e3: 1)
-    b = PGA3.new(e2: 1, e12: 1)
+    a = PGA2.new(e1: 1, e3: 1)
+    b = PGA2.new(e2: 1, e12: 1)
 
-    assert PGA3.add(a, b) |> PGA3.gp(a) |> inspect == "1 - e2 - e12 + e23 + e123"
+    assert PGA2.add(a, b) |> PGA2.gp(a) |> inspect == "1 - e2 - e12 + e23 + e123"
 
-    assert PGA3.new({1, 2, 3, 4, 5, 6, 7, 8}) ==
-             PGA3.new(scalar: 1, e1: 2, e2: 3, e12: 4, e3: 5, e13: 6, e23: 7, e123: 8)
+    assert PGA2.new({1, 2, 3, 4, 5, 6, 7, 8}) ==
+             PGA2.new(scalar: 1, e1: 2, e2: 3, e12: 4, e3: 5, e13: 6, e23: 7, e123: 8)
   end
 
   test "reverse" do
     e1 =
-      PGA3.new(e1: 1)
+      PGA2.new(e1: 1)
 
     e12 =
-      PGA3.new(e12: 1)
+      PGA2.new(e12: 1)
 
     e123 =
-      PGA3.new(e123: 1)
+      PGA2.new(e123: 1)
 
-    assert PGA3.reverse(e1) ==
+    assert PGA2.reverse(e1) ==
              e1
 
-    assert PGA3.reverse(e12) ==
-             PGA3.new(e12: -1)
+    assert PGA2.reverse(e12) ==
+             PGA2.new(e12: -1)
 
-    assert PGA3.reverse(e123) ==
-             PGA3.new(e123: -1)
+    assert PGA2.reverse(e123) ==
+             PGA2.new(e123: -1)
   end
 
   test "grade extraction" do
     a =
-      PGA3.new(
+      PGA2.new(
         scalar: 1,
         e1: 2,
         e12: 3,
@@ -1183,296 +1410,708 @@ defmodule PGATest do
         e123: 5
       )
 
-    assert PGA3.grade(0, a) ==
-             PGA3.new(scalar: 1)
+    assert PGA2.grade(a, 0) ==
+             PGA2.new(scalar: 1)
 
-    assert PGA3.grade(1, a) ==
-             PGA3.new(e1: 2, e3: 4)
+    assert PGA2.grade(a, 1) ==
+             PGA2.new(e1: 2, e3: 4)
 
-    assert PGA3.grade(2, a) ==
-             PGA3.new(e12: 3)
+    assert PGA2.grade(a, 2) ==
+             PGA2.new(e12: 3)
 
-    assert PGA3.grade(3, a) ==
-             PGA3.new(e123: 5)
+    assert PGA2.grade(a, 3) ==
+             PGA2.new(e123: 5)
   end
 
   test "grade of homogeneous blade" do
-    e12 = PGA3.new(e12: 7)
+    e12 = PGA2.new(e12: 7)
 
-    assert PGA3.grade(2, e12) == e12
-    assert PGA3.grade(1, e12) == PGA3.new()
+    assert PGA2.grade(e12, 2) == e12
+    assert PGA2.grade(e12, 1) == PGA2.new()
   end
 
   test "grade preserves zero" do
-    zero = PGA3.new()
+    zero = PGA2.new()
 
     for g <- 0..3 do
-      assert PGA3.grade(g, zero) == zero
+      assert PGA2.grade(zero, g) == zero
     end
   end
 
   test "grade is a projection" do
     a =
-      PGA3.new(
+      PGA2.new(
         scalar: 1,
         e1: 2,
         e23: 3,
         e123: 4
       )
 
-    assert PGA3.grade(1, PGA3.grade(1, a)) ==
-             PGA3.grade(1, a)
+    assert PGA2.grade(PGA2.grade(a, 1), 1) ==
+             PGA2.grade(a, 1)
   end
 
   test "invalid grade raises" do
     assert_raise ArgumentError, fn ->
-      PGA3.grade(4, PGA3.new(e1: 1))
+      PGA2.grade(PGA2.new(e1: 1), 4)
     end
   end
 
   test "outer product of basis vectors" do
-    e1 = PGA3.new(e1: 1)
-    e2 = PGA3.new(e2: 1)
+    e1 = PGA2.new(e1: 1)
+    e2 = PGA2.new(e2: 1)
 
-    assert PGA3.wedge(e1, e2) ==
-             PGA3.new(e12: 1)
+    assert PGA2.wedge(e1, e2) ==
+             PGA2.new(e12: 1)
 
-    assert PGA3.wedge(e2, e1) ==
-             PGA3.new(e12: -1)
+    assert PGA2.wedge(e2, e1) ==
+             PGA2.new(e12: -1)
   end
 
   test "outer product removes repeated vectors" do
-    e1 = PGA3.new(e1: 1)
+    e1 = PGA2.new(e1: 1)
 
-    assert PGA3.wedge(e1, e1) ==
-             PGA3.new()
+    assert PGA2.wedge(e1, e1) ==
+             PGA2.new()
   end
 
   test "outer product of higher blades" do
-    e12 = PGA3.new(e12: 1)
-    e3 = PGA3.new(e3: 1)
+    e12 = PGA2.new(e12: 1)
+    e3 = PGA2.new(e3: 1)
 
-    assert PGA3.wedge(e12, e3) ==
-             PGA3.new(e123: 1)
+    assert PGA2.wedge(e12, e3) ==
+             PGA2.new(e123: 1)
   end
 
   test "outer product is antisymmetric for vectors" do
-    e1 = PGA3.new(e1: 1)
-    e2 = PGA3.new(e2: 1)
+    e1 = PGA2.new(e1: 1)
+    e2 = PGA2.new(e2: 1)
 
-    assert PGA3.wedge(e1, e2) == PGA3.scale(-1, PGA3.wedge(e2, e1))
+    assert PGA2.wedge(e1, e2) == PGA2.scale(-1, PGA2.wedge(e2, e1))
   end
 
   test "inner product of vectors" do
-    e1 = PGA3.new(e1: 1)
-    e2 = PGA3.new(e2: 1)
-    e3 = PGA3.new(e3: 1)
+    e1 = PGA2.new(e1: 1)
+    e2 = PGA2.new(e2: 1)
+    e3 = PGA2.new(e3: 1)
 
-    assert PGA3.inner(e1, e1) ==
-             PGA3.new(scalar: 1)
+    assert PGA2.inner(e1, e1) ==
+             PGA2.new(scalar: 1)
 
-    assert PGA3.inner(e2, e2) ==
-             PGA3.new(scalar: 1)
+    assert PGA2.inner(e2, e2) ==
+             PGA2.new(scalar: 1)
 
-    assert PGA3.inner(e3, e3) ==
-             PGA3.new()
+    assert PGA2.inner(e3, e3) ==
+             PGA2.new()
 
-    assert PGA3.inner(e1, e2) ==
-             PGA3.new()
+    assert PGA2.inner(e1, e2) ==
+             PGA2.new()
   end
 
   test "vector bivector contraction" do
-    e1 = PGA3.new(e1: 1)
-    e12 = PGA3.new(e12: 1)
+    e1 = PGA2.new(e1: 1)
+    e12 = PGA2.new(e12: 1)
 
-    assert PGA3.inner(e1, e12) ==
-             PGA3.new(e2: 1)
+    assert PGA2.inner(e1, e12) ==
+             PGA2.new(e2: 1)
   end
 
   test "inner product grade" do
-    a = PGA3.new(e12: 1)
-    b = PGA3.new(e123: 1)
+    a = PGA2.new(e12: 1)
+    b = PGA2.new(e123: 1)
 
-    assert PGA3.inner(a, b) ==
-             PGA3.new(e3: -1)
+    assert PGA2.inner(a, b) ==
+             PGA2.new(e3: -1)
   end
 
   test "scalar product" do
-    e1 = PGA3.new(e1: 1)
-    e2 = PGA3.new(e2: 1)
-    e3 = PGA3.new(e3: 1)
+    e1 = PGA2.new(e1: 1)
+    e2 = PGA2.new(e2: 1)
+    e3 = PGA2.new(e3: 1)
 
-    assert PGA3.scalar_product(e1, e1) == 1
-    assert PGA3.scalar_product(e2, e2) == 1
-    assert PGA3.scalar_product(e3, e3) == 0
+    assert PGA2.scalar_product(e1, e1) == 1
+    assert PGA2.scalar_product(e2, e2) == 1
+    assert PGA2.scalar_product(e3, e3) == 0
 
-    assert PGA3.scalar_product(e1, e2) == 0
+    assert PGA2.scalar_product(e1, e2) == 0
   end
 
   test "scalar product bivectors" do
-    e12 = PGA3.new(e12: 1)
+    e12 = PGA2.new(e12: 1)
 
-    assert PGA3.scalar_product(e12, e12) == -1
+    assert PGA2.scalar_product(e12, e12) == -1
   end
 
   test "inverse of bivector" do
-    e12 = PGA3.new(e12: 1)
+    e12 = PGA2.new(e12: 1)
 
-    assert PGA3.gp(e12, PGA3.inverse(e12)) ==
-             PGA3.new(scalar: 1)
+    assert PGA2.gp(e12, PGA2.inverse(e12)) ==
+             PGA2.new(scalar: 1)
   end
 
   test "inverse of vector" do
-    e1 = PGA3.new(e1: 1)
-    e2 = PGA3.new(e2: 1)
+    e1 = PGA2.new(e1: 1)
+    e2 = PGA2.new(e2: 1)
 
-    assert PGA3.gp(e1, PGA3.inverse(e1)) ==
-             PGA3.new(scalar: 1)
+    assert PGA2.gp(e1, PGA2.inverse(e1)) ==
+             PGA2.new(scalar: 1)
 
-    assert PGA3.gp(e2, PGA3.inverse(e2)) ==
-             PGA3.new(scalar: 1)
+    assert PGA2.gp(e2, PGA2.inverse(e2)) ==
+             PGA2.new(scalar: 1)
   end
 
   test "inverse of scalar" do
-    a = PGA3.new(scalar: 5)
+    a = PGA2.new(scalar: 5)
 
-    assert PGA3.inverse(a) ==
-             PGA3.new(scalar: 0.2)
+    assert PGA2.inverse(a) ==
+             PGA2.new(scalar: 0.2)
   end
 
   test "pseudoscalar is not invertible" do
-    i = PGA3.new(e123: 1)
+    i = PGA2.new(e123: 1)
 
-    assert PGA3.scalar_product(i, PGA3.reverse(i)) == 0
+    assert PGA2.scalar_product(i, PGA2.reverse(i)) == 0
   end
 
   test "inverse rejects null vectors" do
-    e3 = PGA3.new(e3: 1)
+    e3 = PGA2.new(e3: 1)
 
     assert_raise ArgumentError, fn ->
-      PGA3.inverse(e3)
+      PGA2.inverse(e3)
     end
   end
 
   test "inverse rejects null pseudoscalar" do
-    i = PGA3.new(e123: 1)
+    i = PGA2.new(e123: 1)
 
     assert_raise ArgumentError, fn ->
-      PGA3.inverse(i)
+      PGA2.inverse(i)
     end
   end
 
   test "inverse property" do
     for a <- [
-          PGA3.new(e1: 1),
-          PGA3.new(e2: 1),
-          PGA3.new(e12: 1),
-          PGA3.new(scalar: 7)
+          PGA2.new(e1: 1),
+          PGA2.new(e2: 1),
+          PGA2.new(e12: 1),
+          PGA2.new(scalar: 7)
         ] do
-      assert PGA3.gp(a, PGA3.inverse(a)) ==
-               PGA3.new(scalar: 1)
+      assert PGA2.gp(a, PGA2.inverse(a)) ==
+               PGA2.new(scalar: 1)
     end
   end
 
   test "inverse property right multiplication" do
-    a = PGA3.new(e12: 1)
+    a = PGA2.new(e12: 1)
 
-    assert PGA3.gp(PGA3.inverse(a), a) ==
-             PGA3.new(scalar: 1)
+    assert PGA2.gp(PGA2.inverse(a), a) ==
+             PGA2.new(scalar: 1)
   end
 
   test "scalar?" do
-    assert PGA3.scalar?(PGA3.new(scalar: 5))
+    assert PGA2.scalar?(PGA2.new(scalar: 5))
 
-    refute PGA3.scalar?(PGA3.new(e1: 1))
-    refute PGA3.scalar?(PGA3.new(e12: 1))
+    refute PGA2.scalar?(PGA2.new(e1: 1))
+    refute PGA2.scalar?(PGA2.new(e12: 1))
 
-    assert PGA3.scalar?(PGA3.new())
+    assert PGA2.scalar?(PGA2.new())
   end
 
   test "geometric product identity" do
-    one = PGA3.new(scalar: 1)
+    one = PGA2.new(scalar: 1)
 
     for a <- [
-          PGA3.new(e1: 1),
-          PGA3.new(e2: 1),
-          PGA3.new(e12: 1),
-          PGA3.new(e1: 2, e23: 3)
+          PGA2.new(e1: 1),
+          PGA2.new(e2: 1),
+          PGA2.new(e12: 1),
+          PGA2.new(e1: 2, e23: 3)
         ] do
-      assert PGA3.gp(one, a) == a
-      assert PGA3.gp(a, one) == a
+      assert PGA2.gp(one, a) == a
+      assert PGA2.gp(a, one) == a
     end
   end
 
   test "reverse is involution" do
     for a <- [
-          PGA3.new(e1: 1, e12: 2),
-          PGA3.new(e123: 1),
-          PGA3.new(scalar: 5)
+          PGA2.new(e1: 1, e12: 2),
+          PGA2.new(e123: 1),
+          PGA2.new(scalar: 5)
         ] do
-      assert PGA3.reverse(PGA3.reverse(a)) == a
+      assert PGA2.reverse(PGA2.reverse(a)) == a
     end
   end
 
   test "scalar product symmetry" do
-    a = PGA3.new(e1: 2, e12: 3)
-    b = PGA3.new(e2: 4, e23: 5)
+    a = PGA2.new(e1: 2, e12: 3)
+    b = PGA2.new(e2: 4, e23: 5)
 
-    assert PGA3.scalar_product(a, b) ==
-             PGA3.scalar_product(b, a)
+    assert PGA2.scalar_product(a, b) ==
+             PGA2.scalar_product(b, a)
   end
 
   test "multivector associativity" do
-    a = PGA3.new(e1: 2, e12: -1)
-    b = PGA3.new(e2: 3, e23: 4)
-    c = PGA3.new(e3: 5, e123: 1)
+    a = PGA2.new(e1: 2, e12: -1)
+    b = PGA2.new(e2: 3, e23: 4)
+    c = PGA2.new(e3: 5, e123: 1)
 
-    assert PGA3.gp(PGA3.gp(a, b), c) ==
-             PGA3.gp(a, PGA3.gp(b, c))
+    assert PGA2.gp(PGA2.gp(a, b), c) ==
+             PGA2.gp(a, PGA2.gp(b, c))
   end
 
   test "reverse reverses product order" do
-    a = PGA3.new(e1: 1, e12: 2)
-    b = PGA3.new(e2: 3, e23: 4)
+    a = PGA2.new(e1: 1, e12: 2)
+    b = PGA2.new(e2: 3, e23: 4)
 
-    assert PGA3.reverse(PGA3.gp(a, b)) ==
-             PGA3.gp(PGA3.reverse(b), PGA3.reverse(a))
+    assert PGA2.reverse(PGA2.gp(a, b)) ==
+             PGA2.gp(PGA2.reverse(b), PGA2.reverse(a))
   end
 
   test "inner product vs grade" do
-    e1 = PGA3.new(e1: 1)
-    e12 = PGA3.new(e12: 1)
+    e1 = PGA2.new(e1: 1)
+    e12 = PGA2.new(e12: 1)
 
-    result = PGA3.inner(e1, e12)
+    result = PGA2.inner(e1, e12)
 
-    assert PGA3.grade(1, result) == result
+    assert PGA2.grade(result, 1) == result
   end
 
   test "inner product vector bivector" do
-    e1 = PGA3.new(e1: 1)
-    e12 = PGA3.new(e12: 1)
+    e1 = PGA2.new(e1: 1)
+    e12 = PGA2.new(e12: 1)
 
-    assert PGA3.inner(e1, e12) ==
-             PGA3.new(e2: 1)
+    assert PGA2.inner(e1, e12) ==
+             PGA2.new(e2: 1)
   end
 
   test "zero?" do
-    assert PGA3.zero?(PGA3.new())
+    assert PGA2.zero?(PGA2.new())
 
-    refute PGA3.zero?(PGA3.new(e1: 1))
-    refute PGA3.zero?(PGA3.new(e1: 1, e12: 2))
+    refute PGA2.zero?(PGA2.new(e1: 1))
+    refute PGA2.zero?(PGA2.new(e1: 1, e12: 2))
   end
 
   test "grades" do
-    assert PGA3.grades(PGA3.new()) == []
+    assert PGA2.grades(PGA2.new()) == []
 
-    assert PGA3.grades(PGA3.new(scalar: 1)) == [0]
+    assert PGA2.grades(PGA2.new(scalar: 1)) == [0]
 
-    assert PGA3.grades(PGA3.new(e1: 1)) == [1]
+    assert PGA2.grades(PGA2.new(e1: 1)) == [1]
 
-    assert PGA3.grades(PGA3.new(e12: 1)) == [2]
+    assert PGA2.grades(PGA2.new(e12: 1)) == [2]
 
-    assert PGA3.grades(PGA3.new(e1: 1, e12: 1)) == [1, 2]
+    assert PGA2.grades(PGA2.new(e1: 1, e12: 1)) == [1, 2]
+  end
+
+  test "dual of basis blades" do
+    assert PGA2.dual(PGA2.new(scalar: 1)) ==
+             PGA2.new(e123: 1)
+
+    assert PGA2.dual(PGA2.new(e1: 1)) ==
+             PGA2.new(e23: 1)
+
+    assert PGA2.dual(PGA2.new(e2: 1)) ==
+             PGA2.new(e13: -1)
+
+    assert PGA2.dual(PGA2.new(e3: 1)) ==
+             PGA2.new(e12: 1)
+
+    assert PGA2.dual(PGA2.new(e12: 1)) ==
+             PGA2.new(e3: 1)
+
+    assert PGA2.dual(PGA2.new(e13: 1)) ==
+             PGA2.new(e2: -1)
+
+    assert PGA2.dual(PGA2.new(e23: 1)) ==
+             PGA2.new(e1: 1)
+
+    assert PGA2.dual(PGA2.new(e123: 1)) ==
+             PGA2.new(scalar: 1)
+  end
+
+  test "dual is linear" do
+    a = PGA2.new(e1: 2, e12: 3)
+
+    assert PGA2.dual(a) ==
+             PGA2.add(
+               PGA2.new(e23: 2),
+               PGA2.new(e3: 3)
+             )
+  end
+
+  test "dual preserves zero" do
+    assert PGA2.dual(PGA2.new()) ==
+             PGA2.new()
+  end
+
+  test "dual is involutive up to sign" do
+    blades = [
+      PGA2.new(scalar: 1),
+      PGA2.new(e1: 1),
+      PGA2.new(e2: 1),
+      PGA2.new(e3: 1),
+      PGA2.new(e12: 1),
+      PGA2.new(e13: 1),
+      PGA2.new(e23: 1),
+      PGA2.new(e123: 1)
+    ]
+
+    for blade <- blades do
+      double = PGA2.dual(PGA2.dual(blade))
+
+      assert double == blade or
+               double == PGA2.scale(-1, blade)
+    end
+  end
+
+  test "dual distributes over addition" do
+    a = PGA2.new(e1: 2, e12: 3)
+    b = PGA2.new(e2: -1, e23: 4)
+
+    assert PGA2.dual(PGA2.add(a, b)) ==
+             PGA2.add(PGA2.dual(a), PGA2.dual(b))
+  end
+
+  test "wedge basis blades" do
+    e1 = PGA2.new(e1: 1)
+    e2 = PGA2.new(e2: 1)
+
+    assert PGA2.wedge(e1, e2) ==
+             PGA2.new(e12: 1)
+
+    assert PGA2.wedge(e2, e1) ==
+             PGA2.new(e12: -1)
+
+    assert PGA2.wedge(e1, e1) ==
+             PGA2.new()
+  end
+
+  test "wedge trivector" do
+    e12 = PGA2.new(e12: 1)
+    e3 = PGA2.new(e3: 1)
+
+    assert PGA2.wedge(e12, e3) ==
+             PGA2.new(e123: 1)
+  end
+
+  test "join is anti-commutative up to scale" do
+    a = PGA3.new(e1: 1)
+    b = PGA3.new(e2: 1)
+
+    assert PGA3.join(a, b) ==
+             PGA3.scale(-1, PGA3.join(b, a))
+  end
+
+  test "wedge is associative" do
+    a = PGA2.new(e1: 1)
+    b = PGA2.new(e2: 1)
+    c = PGA2.new(e3: 1)
+
+    assert PGA2.wedge(PGA2.wedge(a, b), c) ==
+             PGA2.wedge(a, PGA2.wedge(b, c))
+  end
+
+  test "normalize" do
+    assert PGA2.normalize(PGA2.new(e1: 5)) ==
+             PGA2.new(e1: 1)
+
+    assert PGA2.normalize(PGA2.new(e12: -3)) ==
+             PGA2.new(e12: 1)
+
+    assert PGA2.normalize(PGA2.new(scalar: 7)) ==
+             PGA2.new(scalar: 1)
+  end
+
+  test "cannot normalize zero" do
+    assert_raise ArgumentError, fn ->
+      PGA2.normalize(PGA2.new())
+    end
+  end
+
+  test "blade?" do
+    assert PGA2.blade?(PGA2.new())
+
+    assert PGA2.blade?(PGA2.new(e1: 1))
+    assert PGA2.blade?(PGA2.new(e12: 1))
+    assert PGA2.blade?(PGA2.new(e123: 1))
+
+    refute PGA2.blade?(PGA2.new(e1: 1, e12: 1))
+  end
+
+  test "canonical normalize" do
+    assert PGA2.normalize(PGA2.new(e1: -5)) ==
+             PGA2.new(e1: 1)
+
+    assert PGA2.normalize(PGA2.new(e12: -5)) ==
+             PGA2.new(e12: 1)
+  end
+
+  test "canonical normalize vector" do
+    assert PGA2.normalize(PGA2.new(e1: -5, e2: 10)) ==
+             PGA2.new(e1: 0.5, e2: -1)
+  end
+
+  test "blade detection" do
+    assert PGA2.blade?(PGA2.new(e1: 1, e2: 2))
+    assert PGA2.blade?(PGA2.new(e12: 1, e13: 2))
+
+    refute PGA2.blade?(PGA2.new(e1: 1, e12: 2))
+  end
+
+  test "squared norm of scalar" do
+    assert PGA2.squared_norm(PGA2.new(scalar: 5)) == 25
+  end
+
+  test "squared norm of Euclidean vector" do
+    e1 = PGA2.new(e1: 1)
+
+    assert PGA2.squared_norm(e1) == 1
+  end
+
+  test "squared norm of bivector" do
+    e12 = PGA2.new(e12: 1)
+
+    assert PGA2.squared_norm(e12) == 1
+  end
+
+  test "squared norm of null vector" do
+    e3 = PGA2.new(e3: 1)
+
+    assert PGA2.squared_norm(e3) == 0
+  end
+
+  test "squared norm uses reverse" do
+    e12 = PGA2.new(e12: 1)
+
+    assert PGA2.squared_norm(e12) == 1
+  end
+
+  test "norm" do
+    assert PGA2.norm(PGA2.new(e1: 3)) == 3
+    assert PGA2.norm(PGA2.new(e12: 4)) == 4
+  end
+
+  test "norm of null vector" do
+    assert PGA2.norm(PGA2.new(e3: 1)) == 0
+  end
+
+  test "point constructor" do
+    p = PGA3.point(2, 3, 4)
+
+    assert PGA3.grade(p, 3) == p
+
+    assert p ==
+             PGA3.new(
+               e123: 1,
+               e234: 2,
+               e134: -3,
+               e124: 4
+             )
+  end
+
+  test "join of two points gives a line" do
+    a = PGA3.point(0, 0, 0)
+    b = PGA3.point(1, 0, 0)
+
+    line = PGA3.join(a, b)
+
+    assert PGA3.blade?(line)
+    assert PGA3.grade(line, 2) == line
+  end
+
+  test "meet of planes gives a line" do
+    a = PGA3.new(e1: 1)
+    b = PGA3.new(e2: 1)
+
+    line = PGA3.meet(a, b)
+
+    assert PGA3.blade?(line)
+    assert PGA3.grade(line, 2) == line
+  end
+
+  test "point and plane grades" do
+    p = PGA3.point(1, 2, 3)
+    pl = PGA3.plane(1, 0, 0, -1)
+
+    assert PGA3.grade(p, 3) == p
+    assert PGA3.grade(pl, 1) == pl
+  end
+
+  test "point lies on plane" do
+    p = PGA3.point(1, 2, 3)
+    plane = PGA3.plane(1, 0, 0, -1)
+
+    assert PGA3.zero?(PGA3.join(p, plane))
+  end
+
+  test "origin lies on coordinate planes" do
+    p = PGA3.point(0, 0, 0)
+
+    assert PGA3.zero?(PGA3.join(p, PGA3.plane(1, 0, 0, 0)))
+    assert PGA3.zero?(PGA3.join(p, PGA3.plane(0, 1, 0, 0)))
+    assert PGA3.zero?(PGA3.join(p, PGA3.plane(0, 0, 1, 0)))
+  end
+
+  test "join of two points creates a line" do
+    a = PGA3.point(0, 0, 0)
+    b = PGA3.point(1, 0, 0)
+
+    line = PGA3.join(a, b)
+
+    assert PGA3.grade(line, 2) == line
+  end
+
+  test "point not on plane" do
+    p = PGA3.point(2, 0, 0)
+    plane = PGA3.plane(1, 0, 0, -1)
+
+    refute PGA3.zero?(PGA3.join(p, plane))
+  end
+
+  test "two planes meet in a line" do
+    a = PGA3.plane(1, 0, 0, 0)
+    b = PGA3.plane(0, 1, 0, 0)
+
+    line = PGA3.meet(a, b)
+
+    assert PGA3.grade(line, 2) == line
+  end
+
+  test "scaled points represent the same point" do
+    p = PGA3.point(1, 2, 3)
+
+    scaled =
+      PGA3.scale(5, p)
+
+    assert PGA3.normalize(p) ==
+             PGA3.normalize(scaled)
+  end
+
+  test "scaled lines represent the same line" do
+    a = PGA3.point(0, 0, 0)
+    b = PGA3.point(1, 0, 0)
+
+    line = PGA3.line(a, b)
+
+    assert PGA3.normalize(line) ==
+             PGA3.normalize(PGA3.scale(-3, line))
+  end
+
+  test "join of points creates a line" do
+    a = PGA3.point(0, 0, 0)
+    b = PGA3.point(1, 0, 0)
+
+    line = PGA3.join(a, b)
+
+    assert PGA3.grade(line, 2) == line
+  end
+
+  test "meet of two planes creates a line" do
+    a = PGA3.plane(1, 0, 0, 0)
+    b = PGA3.plane(0, 1, 0, 0)
+
+    line = PGA3.meet(a, b)
+
+    assert PGA3.grade(line, 2) == line
+  end
+
+  test "parallel planes do not intersect" do
+    a = PGA3.plane(1, 0, 0, 0)
+    b = PGA3.plane(1, 0, 0, -1)
+
+    refute PGA3.intersects?(a, b)
+  end
+
+  test "planes intersect" do
+    a = PGA3.plane(1, 0, 0, 0)
+    b = PGA3.plane(0, 1, 0, 0)
+
+    assert PGA3.intersects?(a, b)
+  end
+
+  test "line contains point" do
+    a = PGA3.point(0, 0, 0)
+    b = PGA3.point(1, 0, 0)
+    p = PGA3.point(0.5, 0, 0)
+
+    line = PGA3.line(a, b)
+
+    assert PGA3.contains?(line, p)
+  end
+
+  test "line does not contain point" do
+    a = PGA3.point(0, 0, 0)
+    b = PGA3.point(1, 0, 0)
+    p = PGA3.point(0, 1, 0)
+
+    line = PGA3.line(a, b)
+
+    refute PGA3.contains?(line, p)
+  end
+
+  test "parallel planes are ideal intersection" do
+    a = PGA3.plane(1, 0, 0, 0)
+    b = PGA3.plane(1, 0, 0, -1)
+
+    assert PGA3.ideal?(PGA3.meet(a, b))
+  end
+
+  test "intersecting planes are not ideal" do
+    a = PGA3.plane(1, 0, 0, 0)
+    b = PGA3.plane(0, 1, 0, 0)
+
+    refute PGA3.ideal?(PGA3.meet(a, b))
+  end
+
+  test "same planes are coincident" do
+    a = PGA3.plane(1, 0, 0, -1)
+    b = PGA3.plane(2, 0, 0, -2)
+
+    assert PGA3.coincident?(a, b)
+  end
+
+  test "same lines are coincident" do
+    a = PGA3.point(0, 0, 0)
+    b = PGA3.point(1, 0, 0)
+
+    line1 = PGA3.line(a, b)
+    line2 = PGA3.scale(5, line1)
+
+    assert PGA3.coincident?(line1, line2)
+  end
+
+  test "different planes are not coincident" do
+    a = PGA3.plane(1, 0, 0, -1)
+    b = PGA3.plane(1, 0, 0, -2)
+
+    refute PGA3.coincident?(a, b)
+  end
+
+  test "direction of x axis line" do
+    a = PGA3.point(0, 0, 0)
+    b = PGA3.point(1, 0, 0)
+
+    dir = PGA3.direction(PGA3.line(a, b))
+
+    assert PGA3.ideal?(dir)
+  end
+
+  test "parallel lines have same direction" do
+    l1 =
+      PGA3.line(
+        PGA3.point(0, 0, 0),
+        PGA3.point(1, 0, 0)
+      )
+
+    l2 =
+      PGA3.line(
+        PGA3.point(0, 1, 0),
+        PGA3.point(1, 1, 0)
+      )
+
+    assert PGA3.coincident?(
+             PGA3.direction(l1),
+             PGA3.direction(l2)
+           )
   end
 
   defp tuple_add(a, b) do
