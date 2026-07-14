@@ -1,6 +1,12 @@
 # Geometric Algebra
 
-## Macro
+```elixir
+Mix.install([
+  {:kino, "~> 0.19.0"}
+])
+```
+
+## Generating Macro
 
 ```elixir
 defmodule GeometricAlgebra.Blade do
@@ -1092,18 +1098,7 @@ defmodule GeometricAlgebra do
 end
 ```
 
-## Example
-
-```elixir
-ExUnit.start()
-```
-
-```elixir
-defmodule PGA2D do
-  use GeometricAlgebra,
-    signature: {0,1,1}
-end
-```
+## Implemenations
 
 ```elixir
 defmodule PGA2 do
@@ -1208,14 +1203,20 @@ defmodule PGA3 do
 end
 ```
 
+## Testcases
+
+```elixir
+ExUnit.start()
+```
+
 ```elixir
 defmodule PGATest do
   use ExUnit.Case
 
   test "dimension" do
-    assert PGA2D.dimension() == 3
 
     assert PGA2.dimension() == 3
+    assert PGA3.dimension() == 4
   end
 
   test "multiply" do
@@ -2165,5 +2166,164 @@ defmodule PGATest do
   end
 end
 
+```
+
+<!-- livebook:{"branch_parent_index":2} -->
+
+## Test Runner
+
+```elixir
 ExUnit.run()
+```
+
+<!-- livebook:{"branch_parent_index":1} -->
+
+## Visuals
+
+```elixir
+IO.puts("Hello")
+```
+
+```elixir
+defmodule Scene do
+  use Kino.JS
+
+  def new(geo) do
+    Kino.JS.new(__MODULE__, geo)
+  end
+
+  asset "main.js" do
+    """
+    const svgNS = "http://www.w3.org/2000/svg";
+
+    function el(name, attrs = {}, children = []) {
+    const node = document.createElementNS(svgNS, name);
+
+    for (const [key, value] of Object.entries(attrs)) {
+    if (value !== null && value !== undefined) {
+      node.setAttribute(key, value);
+    }
+    }
+
+    for (const child of children) {
+    if (typeof child === "string") {
+      node.appendChild(document.createTextNode(child));
+    } else if (child) {
+      node.appendChild(child);
+    }
+    }
+
+    return node;
+    }
+
+    export function init(ctx, geo) {
+      ctx.importCSS("main.css")
+
+
+      const svg = el("svg", {
+          width: 1980,
+          height: 1080,
+          preserveAspectRatio: "xMidYMid meet",
+          viewBox: "-1000 -1000 2000 2000",
+    }, [
+          el("defs", {}, [
+            el("marker", {
+              id: "vector-head",
+              viewBox: "0 0 10 10",
+              markerUnits: "userSpaceOnUse",
+              refX: 9,
+              fill: "context-stroke",
+              refY: 5,
+              markerWidth: 70,
+              markerHeight: 70,
+              orient: "auto-start-reverse",
+            }, [
+              el("path", {
+                d: "M 10 5 l -10 5 l 3 -5 l -3 -5 z",
+                stroke: "none",
+                "stroke-width": 0,
+              })
+            ])
+    ]),
+
+          line3d({x: -10, y: 0, z: 0}, {x: 10, y: 0, z: 0}, "black", 2),
+          line3d({x: 0, y: -10, z: 0}, {x: 0, y: 10, z: 0}, "black", 2),
+          el("text", {x: 1000,y: 0, "font-size": 50}, ["X"]),
+          el("text", {y: -1000,x: 0, "font-size": 50}, ["Y"]),
+          ...geo.map((g) => {
+            if(g.type === "vector") {
+    return line3d({x: 0, y: 0, z: 0}, g, g.color, 2)
+    } else if(g.type === "label") {
+    return label3d(g, g.label, g.color)
+    } else{
+    return point3d(g, g.color, 10)
+    } 
+    }),
+      ]);
+
+      document.body.appendChild(svg);
+
+      ctx.root.appendChild(svg)
+    }
+
+    function line3d(from, to,  color = "black", width = 1) {
+      return el("line", {
+        x1: from.x * 100,
+        y1: from.y * -100,
+        x2: to.x * 100,
+        y2: to.y * -100,
+        stroke: color,
+        "stroke-width": width,
+        "marker-end": "url(#vector-head)",
+        "vector-effect": "non-scaling-stroke",
+      });
+    }
+
+      function point3d(p, color = "black", rad = 1) {
+      return el("circle", {
+        cx: p.x * 100,
+        cy: -p.y * 100,
+        r: rad,
+        fill: color,
+    });
+    }
+
+    function label3d(p, text, color = "black", rad = 1) {
+      return el("text", {
+        x: p.x * 100,
+        y: -p.y * 100,
+        "text-anchor": "middle",
+        fill: color,
+     "font-size": 50
+    }, [
+    text
+    ]);}
+    """
+  end
+
+  asset "main.css" do
+    """
+    svg {
+      display: block;
+      border: 2px solid #aaa;
+      width: 100%;
+      height: auto;
+      box-sizing: border-box;
+      overflow: visible;
+      padding: 1em;
+      shape-rendering: geometricPrecision;
+    }
+    """
+  end
+end
+```
+
+<!-- livebook:{"reevaluate_automatically":true} -->
+
+```elixir
+Scene.new([
+  %{x: 4, y: 3, z: 0, type: :vector, color: "red"},
+  %{x: 4, y: 3, z: 0, type: :label, label: "foo", color: "red"},
+  %{x: -3, y: 4, z: 0, color: "blue"}
+])
 ```
