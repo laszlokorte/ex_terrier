@@ -1,0 +1,381 @@
+# Geo Alg Test
+
+```elixir
+Mix.install([
+  {:galixir, "~> 0.10.0"},
+  {:kino, "~> 0.19.0"}
+])
+```
+
+## Section
+
+```elixir
+Galixir.Algebras.PGA3.origin()
+```
+
+```elixir
+alias Galixir.Algebras.PGA3
+
+PGA3.point(1, 2, 3) |> PGA3.point_coordinates() |> IO.inspect()
+PGA3.origin() |> PGA3.point_coordinates() |> IO.inspect()
+
+PGA3.dual(PGA3.new(scalar: 1)) |> IO.inspect()
+```
+
+```elixir
+defmodule Utils do
+  import PGA3
+
+  def align(from, to) do
+    {motor, _q} =
+      Enum.zip(from, to)
+      |> Enum.reduce({new(scalar: 1), dual(new(scalar: 1))}, fn {p, q}, {m, q_acc} ->
+        p_curr =
+          join(q_acc, transform(m, p))
+
+        p_curr = p_curr |> canonicalize()
+
+        q_next =
+          join(q_acc, q)
+
+        q_next = q_next |> canonicalize()
+
+        delta = gp(q_next, blade_inverse(p_curr))
+
+        q_next =
+          if scalar_part(delta) < 0 do
+            negate(q_next)
+          else
+            q_next
+          end
+
+        delta = gp(q_next, blade_inverse(p_curr))
+
+        step =
+          add(new(scalar: 1), delta)
+          |> normalize()
+
+        m2 =
+          gp(step, m)
+          |> normalize()
+
+        {m2, q_next}
+      end)
+
+    motor
+  end
+
+  def lcontract(a, b) do
+    ga = grade(a)
+    gb = grade(b)
+
+    if ga > gb do
+      PGA3.new()
+    else
+      PGA3.gp(a, b)
+      |> PGA3.grade(gb - ga)
+    end
+  end
+
+  def grade(%PGA3{} = mv) do
+    case PGA3.grades(mv) do
+      [g] ->
+        g
+
+      [] ->
+        raise ArgumentError, "zero multivector has no grade"
+
+      gs ->
+        raise ArgumentError,
+              "multivector has multiple grades: #{inspect(gs)}"
+    end
+  end
+
+  def look_at(position, target, pole \\ ideal_point(0, 0, 1)) do
+    IO.inspect(PGA3.grades(pole), label: "grades(pole)")
+
+    align(
+      [
+        dual(new(e0: 1)),
+        negate(dual(new(e3: 1))),
+        dual(new(e2: 1))
+      ],
+      [
+        position,
+        target,
+        pole
+      ]
+    )
+  end
+end
+```
+
+```elixir
+line =
+  PGA3.join(
+    PGA3.point(1, 0, 0),
+    PGA3.point(1, 0, -1)
+  )
+
+point = PGA3.point(1,0,0.5)
+IO.inspect(line, label: "line")
+
+plane =
+  PGA3.join(
+    line,
+    PGA3.ideal_point(0, 0, 1)
+  )
+
+dl = PGA3.dual(line)
+di = PGA3.dual(PGA3.ideal_point(0, 0, 1))
+
+IO.inspect(dl, label: "dual(line)")
+IO.inspect(di, label: "dual(ideal)")
+
+w = PGA3.wedge(dl, di)
+
+IO.inspect(w, label: "wedge")
+IO.inspect(PGA3.grades(w), label: "wedge grades")
+```
+
+```elixir
+IO.inspect(PGA3.line(
+  PGA3.point(1,0,0),
+  PGA3.point(1,0,-1)
+))
+```
+
+```elixir
+IO.inspect(
+  PGA3.wedge(
+    PGA3.point(1,0,0),
+    PGA3.point(1,0,-1)
+  ),
+  label: "wedge(points)"
+)
+```
+
+```elixir
+IO.inspect(PGA3.join(line, point), label: "join")
+IO.inspect(PGA3.zero?(PGA3.join(line, point)), label: "zero?")
+IO.inspect(PGA3.contains?(line, point), label: "contains?")
+```
+
+```elixir
+IO.inspect(PGA3.grades(line))
+IO.inspect(PGA3.grades(point))
+
+IO.inspect(PGA3.dual(line), label: "dual(line)")
+IO.inspect(PGA3.dual(point), label: "dual(point)")
+
+w = PGA3.wedge(PGA3.dual(line), PGA3.dual(point))
+
+IO.inspect(w, label: "wedge")
+IO.inspect(PGA3.grades(w), label: "wedge grades")
+
+IO.inspect(PGA3.undual(w), label: "undual")
+```
+
+```elixir
+camera =
+  Utils.look_at(
+    PGA3.point(0, 1, 0),
+    PGA3.point(1, 0, -1)
+  )
+```
+
+```elixir
+IO.inspect(PGA3.dual(PGA3.new(e0: 1)))
+IO.inspect(PGA3.point(0,0,0))
+```
+
+```elixir
+pyramid_base = [
+  red: PGA3.point(1, 1, 0),
+  red: PGA3.point(1, -1, 0),
+  red: PGA3.point(-1, -1, 0),
+  red: PGA3.point(-1, 1, 0),
+  
+  blue: PGA3.point(1, 0, 0),
+  blue: PGA3.point(-1, 0, 0),
+  blue: PGA3.point(0, -1, 0),
+  blue: PGA3.point(0, 1, 0)
+]
+
+pyramid_tip = PGA3.point(0, 0, 3)
+
+pyramid_points = [
+ {:green, pyramid_tip} | pyramid_base
+]
+```
+
+```elixir
+l = PGA3.line(PGA3.origin(), PGA3.point(1, 0, 0))
+# y = 0
+p = PGA3.plane(0, 1, 0, 0)
+
+IO.inspect(PGA3.join(l, p))
+```
+
+```elixir
+l =
+  PGA3.line(
+    PGA3.point(0, 1, 0),
+    PGA3.point(0, 0, 0)
+  )
+
+d = PGA3.ideal_point(0, 0, 1)
+
+IO.inspect(l)
+IO.inspect(PGA3.dual(PGA3.new(e2: 1)))
+IO.inspect(d)
+IO.inspect(PGA3.join(l, d))
+```
+
+```elixir
+x = PGA3.new(e2: 1)
+
+IO.inspect(PGA3.dual(PGA3.dual(x)))
+```
+
+```elixir
+PGA3.dual(PGA3.new(e0: 1)) |> IO.inspect()
+PGA3.dual(PGA3.new(e1: 1)) |> IO.inspect()
+PGA3.dual(PGA3.new(e2: 1)) |> IO.inspect()
+PGA3.dual(PGA3.new(e3: 1)) |> IO.inspect()
+
+PGA3.dual(PGA3.new(e123: 1)) |> IO.inspect()
+PGA3.dual(PGA3.new(e032: 1)) |> IO.inspect()
+PGA3.dual(PGA3.new(e013: 1)) |> IO.inspect()
+PGA3.dual(PGA3.new(e021: 1)) |> IO.inspect()
+```
+
+```elixir
+eye = PGA3.point(1, 1, 1)
+target = PGA3.point(0, 0, 0)
+pole = PGA3.ideal_point(0, 0, 1)
+
+camera = Utils.look_at(eye, target, pole)
+
+trans = fn m, o ->
+  PGA3.gp(PGA3.gp(m, o), PGA3.reverse(m))
+end
+
+camera
+|> trans.(eye)
+|> IO.inspect(label: "eye'")
+
+t = PGA3.translator(-1, -1, -1)
+
+t |> trans.(PGA3.point(0, 0, 0)) |> PGA3.point_coordinates()
+```
+
+```elixir
+m =
+  Utils.align(
+    [PGA3.dual(PGA3.new(e0: 1))],
+    [PGA3.point(1,1,1)]
+  )
+
+trans.(m, PGA3.point(0,0,0))
+```
+
+```elixir
+m =
+  Utils.align(
+    [
+      PGA3.dual(PGA3.new(e0: 1)),
+      PGA3.negate(PGA3.dual(PGA3.new(e3: 1)))
+    ],
+    [
+      PGA3.point(1,1,1),
+      PGA3.point(0,0,0)
+    ]
+  )
+
+IO.inspect(trans.(m, PGA3.point(1,1,1)), label: "eye")
+IO.inspect(trans.(m, PGA3.point(0,0,0)), label: "target")
+```
+
+```elixir
+eye = PGA3.point(4, 4, 0)
+target = PGA3.point(0, 0, 0)
+pole = PGA3.ideal_point(0, 1, 0)
+
+camera = Utils.look_at(eye, target, pole)
+
+Kino.HTML.new("""
+  <svg viewBox="-100 -100 200 200" width="100" height="100" preserveAspectRatio="xMidYMid slice">
+
+    #{for {{color, p}, i} <- pyramid_points |> Enum.with_index() do
+  camera_point = PGA3.transform(camera, p)
+  IO.inspect(PGA3.point_coordinates(camera_point), label: color)
+  {x, y, z} = PGA3.point_coordinates(camera_point)
+  screen_x = x * 10
+  screen_y = -y * 10
+  """
+    <circle fill="#{color}" r="2" cx="#{screen_x}" cy="#{screen_y}"></circle>
+    <text r="2" x="#{screen_x}" y="#{screen_y}" font-size="6">#{i}</text>
+  """
+end |> Enum.join("\n")}
+  </svg>
+
+  <style>
+    svg {
+      border: 2px solid #aaa;
+      width: 100%;
+      height: auto;
+      box-sizing: border-box;
+    }
+  </style>
+""")
+```
+
+```elixir
+IO.inspect(
+  PGA3.point(0, 0, 0)
+  |> PGA3.transform(camera),
+  label: "camera origin"
+)
+
+IO.inspect(
+  eye
+  |> PGA3.transform(camera),
+  label: "eye"
+)
+
+IO.inspect(
+  target
+  |> PGA3.transform(camera),
+  label: "target"
+)
+```
+
+```elixir
+eye2 =
+  camera
+  |> PGA3.transform(eye)
+  |> PGA3.point_coordinates()
+
+target2 =
+  camera
+  |> PGA3.transform(target)
+  |> PGA3.point_coordinates()
+
+IO.inspect(eye2, label: "eye")
+IO.inspect(target2, label: "target")
+```
+
+```elixir
+eye
+|> PGA3.transform(PGA3.inverse(camera))
+
+target
+|> PGA3.transform(PGA3.inverse(camera))
+```
+
+```elixir
+camera = PGA3.new(scalar: 1)
+
+PGA3.transform(camera, PGA3.point(1, 2, 3)) |> PGA3.point_coordinates()
+```

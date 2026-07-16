@@ -1,9 +1,12 @@
 # Geometric Algebra
 
 ```elixir
-Mix.install([
-  {:kino, "~> 0.19.0"}
-])
+Mix.install(
+  [
+    {:kino, "~> 0.19.0"}
+  ],
+  consolidate_protocols: false
+)
 ```
 
 ## Generating Macro
@@ -1093,6 +1096,54 @@ defmodule GeometricAlgebra do
           sub(gp(a, b), gp(b, a))
         )
       end
+
+      def wedge_all(vectors) do
+        Enum.reduce(vectors, fn v, acc ->
+          wedge(acc, v)
+        end)
+      end
+
+      def rotor_between_frames(source, target) do
+        source_blade = wedge_all(source)
+        target_blade = wedge_all(target)
+
+        x =
+          gp(
+            target_blade,
+            blade_inverse(source_blade)
+          )
+
+        normalize(
+          add(
+            new(scalar: 1),
+            x
+          )
+        )
+      end
+
+      def blade_inverse(b) do
+        rev = reverse(b)
+
+        n =
+          scalar_part(gp(b, rev))
+
+        if abs(n) < 1.0e-12 do
+          raise "cannot invert null blade"
+        end
+
+        scale(1 / n, rev)
+      end
+
+      def normalize_blade(b) do
+        n2 =
+          scalar_part(gp(b, reverse(b)))
+
+        if abs(n2) < 1.0e-12 do
+          raise "cannot normalize null blade"
+        end
+
+        scale(1 / :math.sqrt(abs(n2)), b)
+      end
     end
   end
 end
@@ -1121,6 +1172,14 @@ defmodule PGA3 do
     )
   end
 
+  def vector(x, y, z) do
+    new(
+      e1: x,
+      e2: y,
+      e3: z
+    )
+  end
+
   def line(a, b) do
     join(a, b)
   end
@@ -1131,6 +1190,45 @@ defmodule PGA3 do
       e2: b,
       e3: c,
       e4: -d
+    )
+  end
+
+  def translation(v) do
+    new(
+      scalar: 1,
+      e14: -coefficient(v, :e1) / 2,
+      e24: -coefficient(v, :e2) / 2,
+      e34: -coefficient(v, :e3) / 2
+    )
+  end
+
+  def rotation_between_vectors(a, b) do
+    a = normalize(a)
+    b = normalize(b)
+
+    s = 1 + scalar_part(gp(a, b))
+
+    if s < 1.0e-8 do
+      raise "opposite vectors need special handling"
+    end
+
+    r =
+      add(
+        new(scalar: 1),
+        gp(b, a)
+      )
+
+    scale(1 / :math.sqrt(s * 2), r)
+  end
+
+  def direction_between_points(p, q) do
+    d = sub(q, p)
+
+
+    vector(
+      coefficient(d, :e234),
+      -coefficient(d, :e134),
+      coefficient(d, :e124)
     )
   end
 
@@ -1172,6 +1270,10 @@ defmodule PGA3 do
     meet(line, new(e4: 1))
   end
 
+  def transform(motor, object) do
+    gp(gp(motor, object), reverse(motor))
+  end
+
   def point_coordinates(p) do
     w = coefficient(p, :e123)
 
@@ -1180,6 +1282,10 @@ defmodule PGA3 do
       -coefficient(p, :e134) / w,
       coefficient(p, :e124) / w
     }
+  end
+
+  def negate(x) do
+    scale(-1, x)
   end
 
   def distance(a, b) do
@@ -1199,6 +1305,11 @@ defmodule PGA3 do
       [] -> nil
       _ -> nil
     end
+  end
+
+  def dot(a, b) do
+    gp(a, b)
+    |> scalar_part()
   end
 end
 ```
@@ -2180,150 +2291,547 @@ ExUnit.run()
 
 ## Visuals
 
+<!-- livebook:{"branch_parent_index":1} -->
+
+## SVG 3D
+
 ```elixir
-IO.puts("Hello")
+defmodule SVG3D.Scene do
+  defstruct points: [],
+            lines: []
+end
+
+defmodule SVG3D.Line do
+  defstruct [:from, :to, color: "black"]
+end
+
+defmodule SVG3D.Point do
+  defstruct [:pos, color: "red"]
+end
 ```
 
 ```elixir
-defmodule Scene do
-  use Kino.JS
+defmodule SVG3D.Camera do
+  alias PGA3, as: G
 
-  def new(geo) do
-    Kino.JS.new(__MODULE__, geo)
+  defstruct [
+    :motor,
+    focal_length: 1.0
+  ]
+
+  def point_vector(p) do
+    G.vector(
+      G.coefficient(p, :e234),
+      -G.coefficient(p, :e134),
+      G.coefficient(p, :e124)
+    )
   end
 
-  asset "main.js" do
+  def normalize_rotor(r) do
+    s =
+      G.gp(r, G.reverse(r))
+      |> G.scalar_part()
+      |> abs
+
+    dbg(:math.sqrt(s))
+
+    G.scale(1 / :math.sqrt(s), r)
+  end
+
+  def look_at(position, target, up \\ G.vector(0, 1, 0), focal_length \\ 1.0) do
+    forward =
+      G.sub(target, position)
+      |> point_vector()
+      |> G.normalize_blade()
+
+    b = G.wedge(up, forward)
+    IO.inspect(b, label: "up^forward")
+    IO.inspect(G.dual(b), label: "dual")
+
+    camera_up =
+      up
+      |> G.sub(
+        G.scale(
+          G.scalar_part(G.gp(up, forward)),
+          forward
+        )
+      )
+      |> G.normalize_blade()
+
+    right =
+      G.dual(G.wedge(camera_up, forward))
+      |> G.normalize_blade()
+
+    rotation =
+      G.rotor_between_frames(
+        [
+          G.vector(1, 0, 0),
+          G.vector(0, 1, 0),
+          G.vector(0, 0, 1)
+        ],
+        [
+          right,
+          camera_up,
+          forward
+        ]
+      )
+
+    translation =
+      G.translation(G.scale(-1, point_vector(position)))
+
+    %__MODULE__{
+      motor: G.gp(rotation, translation),
+      focal_length: focal_length
+    }
+  end
+
+  def gram_schmidt(vectors) do
+    Enum.reduce(vectors, [], fn v, basis ->
+      v =
+        Enum.reduce(basis, v, fn b, v ->
+          G.sub(
+            v,
+            G.scale(
+              G.scalar_part(G.gp(v, b)),
+              b
+            )
+          )
+        end)
+
+      [G.normalize(v) | basis]
+    end)
+    |> Enum.reverse()
+  end
+
+  def direction_between_points(p, q) do
+    d = G.sub(q, p)
+
+    G.vector(
+      G.coefficient(d, :e234),
+      -G.coefficient(d, :e134),
+      G.coefficient(d, :e124)
+    )
+  end
+
+  def project(%__MODULE__{} = camera, point) do
+    point =
+      G.transform(
+        camera.motor,
+        point
+      )
+
+    G.meet(
+      G.join(
+        G.point(0, 0, 0),
+        point
+      ),
+      G.plane(0, 0, 1, -camera.focal_length)
+    )
+  end
+
+  def rotor_from_basis(x1, y1, z1, x2, y2, z2) do
+    r =
+      G.add(
+        G.new(scalar: 1),
+        G.add(
+          G.gp(x2, x1),
+          G.add(
+            G.gp(y2, y1),
+            G.gp(z2, z1)
+          )
+        )
+      )
+
+    r |> normalize_rotor()
+  end
+end
+```
+
+```elixir
+defmodule SVG3D do
+  alias SVG3D.Scene
+  alias SVG3D.Line
+  alias SVG3D.Point
+  alias SVG3D.Camera
+  alias PGA3, as: G
+
+  @width 600
+  @height 600
+
+  def render(%Camera{} = cam, %Scene{} = scene) do
+    body = [
+      render_lines(cam, scene.lines),
+      render_points(cam, scene.points)
+    ]
+
+    Kino.HTML.new("""
+    <svg
+      width="#{@width}"
+      height="#{@height}"
+      viewBox="#{-@width/2} #{-@height/2} #{@width} #{@height}"
+      xmlns="http://www.w3.org/2000/svg">
+        #{Enum.join(body, "\n")}
+    </svg>
+    """)
+  end
+
+  defp render_lines(cam, lines) do
+    Enum.map_join(lines, "\n", fn %Line{from: a, to: b, color: color} ->
+      line(
+        project(cam, a),
+        project(cam, b),
+        color
+      )
+    end)
+  end
+
+  defp render_points(cam, points) do
+    Enum.map_join(points, "\n", fn %Point{pos: p, color: color} ->
+      circle(project(cam, p), color)
+    end)
+  end
+
+  defp project(cam, point) do
+    cam
+    |> Camera.project(point)
+    |> screen_coordinates()
+    |> svg_coordinates()
+  end
+
+  def screen_coordinates(p) do
+    w = G.coefficient(p, :e123)
+
+    if w == 0 do
+      {0, 0}
+    else
+      {
+        G.coefficient(p, :e234) / w,
+        G.coefficient(p, :e134) / w
+      }
+    end
+  end
+
+  defp svg_coordinates({x, y}) do
+    {
+      x * @width,
+      y * @height
+    }
+  end
+
+  defp line({x1, y1}, {x2, y2}, color) do
     """
-    const svgNS = "http://www.w3.org/2000/svg";
-
-    function el(name, attrs = {}, children = []) {
-    const node = document.createElementNS(svgNS, name);
-
-    for (const [key, value] of Object.entries(attrs)) {
-    if (value !== null && value !== undefined) {
-      node.setAttribute(key, value);
-    }
-    }
-
-    for (const child of children) {
-    if (typeof child === "string") {
-      node.appendChild(document.createTextNode(child));
-    } else if (child) {
-      node.appendChild(child);
-    }
-    }
-
-    return node;
-    }
-
-    export function init(ctx, geo) {
-      ctx.importCSS("main.css")
-
-
-      const svg = el("svg", {
-          width: 1980,
-          height: 1080,
-          preserveAspectRatio: "xMidYMid meet",
-          viewBox: "-1000 -1000 2000 2000",
-    }, [
-          el("defs", {}, [
-            el("marker", {
-              id: "vector-head",
-              viewBox: "0 0 10 10",
-              markerUnits: "userSpaceOnUse",
-              refX: 9,
-              fill: "context-stroke",
-              refY: 5,
-              markerWidth: 70,
-              markerHeight: 70,
-              orient: "auto-start-reverse",
-            }, [
-              el("path", {
-                d: "M 10 5 l -10 5 l 3 -5 l -3 -5 z",
-                stroke: "none",
-                "stroke-width": 0,
-              })
-            ])
-    ]),
-
-          line3d({x: -10, y: 0, z: 0}, {x: 10, y: 0, z: 0}, "black", 2),
-          line3d({x: 0, y: -10, z: 0}, {x: 0, y: 10, z: 0}, "black", 2),
-          el("text", {x: 1000,y: 0, "font-size": 50}, ["X"]),
-          el("text", {y: -1000,x: 0, "font-size": 50}, ["Y"]),
-          ...geo.map((g) => {
-            if(g.type === "vector") {
-    return line3d({x: 0, y: 0, z: 0}, g, g.color, 2)
-    } else if(g.type === "label") {
-    return label3d(g, g.label, g.color)
-    } else{
-    return point3d(g, g.color, 10)
-    } 
-    }),
-      ]);
-
-      document.body.appendChild(svg);
-
-      ctx.root.appendChild(svg)
-    }
-
-    function line3d(from, to,  color = "black", width = 1) {
-      return el("line", {
-        x1: from.x * 100,
-        y1: from.y * -100,
-        x2: to.x * 100,
-        y2: to.y * -100,
-        stroke: color,
-        "stroke-width": width,
-        "marker-end": "url(#vector-head)",
-        "vector-effect": "non-scaling-stroke",
-      });
-    }
-
-      function point3d(p, color = "black", rad = 1) {
-      return el("circle", {
-        cx: p.x * 100,
-        cy: -p.y * 100,
-        r: rad,
-        fill: color,
-    });
-    }
-
-    function label3d(p, text, color = "black", rad = 1) {
-      return el("text", {
-        x: p.x * 100,
-        y: -p.y * 100,
-        "text-anchor": "middle",
-        fill: color,
-     "font-size": 50
-    }, [
-    text
-    ]);}
+    <line
+      x1="#{x1}"
+      y1="#{y1}"
+      x2="#{x2}"
+      y2="#{y2}"
+    vector-effect="non-scaling-stroke"
+      stroke="#{color}"
+      stroke-width="2"/>
     """
   end
 
-  asset "main.css" do
+  defp circle({x, y}, color) do
     """
-    svg {
-      display: block;
-      border: 2px solid #aaa;
-      width: 100%;
-      height: auto;
-      box-sizing: border-box;
-      overflow: visible;
-      padding: 1em;
-      shape-rendering: geometricPrecision;
-    }
+    <circle
+      cx="#{x}"
+      cy="#{y}"
+      r="4"
+      fill="#{color}"/>
     """
   end
 end
 ```
 
-<!-- livebook:{"reevaluate_automatically":true} -->
+```elixir
+scene = %SVG3D.Scene{
+  points: [
+    %SVG3D.Point{pos: PGA3.point(-1, -1, 0), color: "red"},
+    %SVG3D.Point{pos: PGA3.point(1, -1, 0), color: "green"},
+    %SVG3D.Point{pos: PGA3.point(0, 1, 0), color: "blue"}
+  ],
+  lines: [
+    %SVG3D.Line{
+      from: PGA3.point(-1, -1, 0),
+      to: PGA3.point(1, -1, 0)
+    },
+    %SVG3D.Line{
+      from: PGA3.point(1, -1, 0),
+      to: PGA3.point(0, 1, 0)
+    },
+    %SVG3D.Line{
+      from: PGA3.point(0, 1, 0),
+      to: PGA3.point(-1, -1, 0)
+    },
+    %SVG3D.Line{
+      from: PGA3.point(0, 1, 0),
+      to: PGA3.point(0, -1, 0)
+    },
+    %SVG3D.Line{
+      from: PGA3.point(-1, 0, 0),
+      to: PGA3.point(1, 0, 0)
+    },
+    %SVG3D.Line{
+      from: PGA3.point(0, 0, -1),
+      to: PGA3.point(0, 0, 1)
+    }
+  ]
+}
+
+form =
+  Kino.Control.form(
+    [
+      x: Kino.Input.range("Camera X", min: -5, max: 5, step: 0.1, default: 0.0),
+      y: Kino.Input.range("Camera Y", min: -5, max: 5, step: 0.1, default: 0.0),
+      z: Kino.Input.range("Camera Z", min: -5, max: 5, step: 0.1, default: 2),
+      focal: Kino.Input.range("Focal length", min: 0.1, max: 5, step: 0.1, default: 1)
+    ],
+    report_changes: true
+  )
+
+view = Kino.Frame.new()
+
+
+render = fn %{data: data} ->
+  cam =
+    SVG3D.Camera.look_at(
+      PGA3.point(data.x, data.y, -data.z * 10),
+      PGA3.point(0, 0, 0),
+      PGA3.vector(0, 1, 0),
+      data.focal
+    )
+
+  dbg(cam)
+
+  Kino.Frame.render(
+    view,
+    SVG3D.render(cam, scene)
+  )
+end
+
+Kino.listen(form, render)
+
+render.(%{
+  data: %{x: 0, y: 0, z: 2, focal: 1}
+})
+
+Kino.Layout.grid(
+  [
+    form,
+    view
+  ],
+  columns: 1
+)
+```
 
 ```elixir
-Scene.new([
-  %{x: 4, y: 3, z: 0, type: :vector, color: "red"},
-  %{x: 4, y: 3, z: 0, type: :label, label: "foo", color: "red"},
-  %{x: -3, y: 4, z: 0, color: "blue"}
-])
+r = PGA3.rotation_between_vectors(
+  PGA3.vector(0,0,1),
+  PGA3.vector(1,0,0)
+)
+
+IO.inspect(r)
+```
+
+<!-- livebook:{"branch_parent_index":1} -->
+
+## SVG 2D
+
+```elixir
+defmodule SVG2D.Scene do
+  defstruct points: [],
+            lines: []
+end
+
+defmodule SVG2D.Line do
+  defstruct [:from, :to, color: "black"]
+end
+
+defmodule SVG2D.Point do
+  defstruct [:from, :to, color: "red"]
+end
+```
+
+```elixir
+defmodule SVG2D.Camera do
+  alias PGA2, as: G
+
+  defstruct [
+    :motor,
+    focal_length: 1.0
+  ]
+
+  def point_vector(p) do
+    G.vector(
+      G.coefficient(p, :e234),
+      -G.coefficient(p, :e134),
+      G.coefficient(p, :e124)
+    )
+  end
+
+  def look_at(position, target, up \\ G.vector(0, 1, 0), focal_length \\ 1.0) do
+    direction =
+      G.normalize(G.sub(target, position))
+
+    # rotate camera forward (+Z) into viewing direction
+    r1 =
+      G.rotation_between(
+        G.vector(0, 0, 1),
+        direction
+      )
+
+    # fix camera roll using up vector
+    up_after =
+      G.transform(
+        r1,
+        G.vector(0, 1, 0)
+      )
+
+    r2 =
+      G.rotation_between(
+        up_after,
+        up
+      )
+
+    rotation =
+      G.gp(r2, r1)
+
+    translation =
+      G.translation(
+        G.scale(
+          -1,
+          point_vector(position)
+        )
+      )
+
+    %__MODULE__{
+      motor: G.gp(rotation, translation),
+      focal_length: focal_length
+    }
+  end
+
+  def project(%__MODULE__{} = camera, point) do
+    point =
+      G.transform(
+        camera.motor,
+        point
+      )
+
+    G.meet(
+      G.join(
+        G.point(0, 0, 0),
+        point
+      ),
+      G.plane(0, 0, 1, -camera.focal_length)
+    )
+  end
+end
+```
+
+```elixir
+defmodule SVG2D do
+  alias SVG2D.Scene
+  alias SVG2D.Line
+  alias SVG2D.Camera
+  alias PGA2, as: G
+
+  @width 600
+  @height 600
+
+  def render(%Camera{} = cam, %Scene{} = scene) do
+    body = [
+      render_lines(cam, scene.lines),
+      render_points(cam, scene.points)
+    ]
+
+    Kino.HTML.new("""
+    <svg
+      width="#{@width}"
+      height="#{@height}"
+      viewBox="0 0 #{@width} #{@height}"
+      xmlns="http://www.w3.org/2000/svg">
+        #{Enum.join(body, "\n")}
+    </svg>
+    """)
+  end
+
+  defp render_lines(cam, lines) do
+    Enum.map_join(lines, "\n", fn %Line{from: a, to: b} ->
+      line(
+        project(cam, a),
+        project(cam, b)
+      )
+    end)
+  end
+
+  defp render_points(cam, points) do
+    Enum.map_join(points, "\n", fn p ->
+      circle(project(cam, p))
+    end)
+  end
+
+  defp project(cam, point) do
+    cam
+    |> Camera.project(point)
+    |> screen_coordinates()
+    |> svg_coordinates()
+  end
+
+  def screen_coordinates(p) do
+    w = max(0.1, G.coefficient(p, :e123))
+
+    {
+      G.coefficient(p, :e234) / w,
+      -G.coefficient(p, :e134) / w
+    }
+  end
+
+  defp svg_coordinates({x, y}) do
+    {
+      @width / 2 + x * @width / 2,
+      @height / 2 - y * @height / 2
+    }
+  end
+
+  defp line({x1, y1}, {x2, y2}) do
+    """
+    <line
+      x1="#{x1}"
+      y1="#{y1}"
+      x2="#{x2}"
+      y2="#{y2}"
+    vector-effect="non-scaling-stroke"
+      stroke="black"
+      stroke-width="2"/>
+    """
+  end
+
+  defp circle({x, y}) do
+    """
+    <circle
+      cx="#{x}"
+      cy="#{y}"
+      r="4"
+      fill="red"/>
+    """
+  end
+end
+```
+
+```elixir
+PGA3.point(1, 0, 0)
+```
+
+```elixir
+PGA3.vector(1, 0, 0)
+```
+
+```elixir
+p =
+  G.transform(
+    cam.motor,
+    G.point(0,0,0)
+  )
+
+IO.inspect(p)
 ```
