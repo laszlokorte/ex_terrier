@@ -242,6 +242,8 @@ scene = Scene.new(pyramid_points, pyramid_edges, pyramid_faces, pyramid_labels)
 Kino.nothing()
 ```
 
+<!-- livebook:{"output_size":"wide"} -->
+
 ```elixir
 eye = PGA3.point(7, 5, 3)
 target = PGA3.point(0, 0, 1)
