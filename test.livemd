@@ -2,7 +2,7 @@
 
 ```elixir
 Mix.install([
-  {:galixir, "~> 0.10.0"},
+  {:galixir, "~> 0.15.0"},
   {:kino, "~> 0.19.0"}
 ])
 ```
@@ -25,21 +25,6 @@ PGA3.dual(PGA3.new(scalar: 1)) |> IO.inspect()
 defmodule Utils do
   import PGA3
 
-  def align(ps, qs) do
-    # https://observablehq.com/@enkimute/glu-lookat-in-3d-pga 
-    initial_m = one = PGA3.new(scalar: 1)
-    initial_q = PGA3.dual(PGA3.new(scalar: 1))
-
-    Enum.zip_reduce(ps, qs, {initial_m, initial_q}, fn p, q, {m, prev_q} ->
-      p = prev_q |> PGA3.join(PGA3.transform(m, p)) |> normalize()
-      new_q = prev_q |> PGA3.join(q) |> normalize() |> PGA3.blade_inverse()
-      new_m = new_q |> PGA3.gp(p) |> add(one) |> PGA3.gp(m)
-
-      {new_m, new_q}
-    end)
-    |> elem(0)
-  end
-
   def look_at(
         position \\ point(0, 10, 0),
         target \\ point(0, 0, 0),
@@ -47,7 +32,7 @@ defmodule Utils do
       ) do
     align(
       [position, target, pole],
-      [point(0, 0, 0), point(0, 0, 1), ideal_point(0, 1, 0)]
+      [point(0, 0, 0), point(0, 0, 1), point(0, 1, 0)]
     )
   end
 end
@@ -56,6 +41,10 @@ end
 ```elixir
 defmodule Scene do
   defstruct [:points, :edges, :faces, :labels]
+
+  def new(attrs) do
+    struct(__MODULE__, attrs)
+  end
 
   def new(p, e, f, l) do
     %__MODULE__{
@@ -151,101 +140,94 @@ end
 ```
 
 ```elixir
-pyramid_base = [
-  {"tomato", PGA3.point(1, 1, 1)},
-  {"tomato", PGA3.point(1, -1, 1)},
-  {"tomato", PGA3.point(-1, -1, 1)},
-  {"tomato", PGA3.point(-1, 1, 1)},
-  {"yellowgreen", PGA3.point(1, 0, 1)},
-  {"yellowgreen", PGA3.point(-1, 0, 1)},
-  {"yellowgreen", PGA3.point(0, -1, 1)},
-  {"yellowgreen", PGA3.point(0, 1, 1)},
-  {"teal", PGA3.point(1, 1, 0)},
-  {"teal", PGA3.point(1, -1, 0)},
-  {"teal", PGA3.point(-1, -1, 0)},
-  {"teal", PGA3.point(-1, 1, 0)}
-]
-
 pyramid_tip = PGA3.point(0, 0, 3)
 
-pyramid_points = [
-  {"rebeccapurple", pyramid_tip} | pyramid_base
-]
-
-pyramid_edges = [
-  {"royalblue", {PGA3.point(1, 1, 1), pyramid_tip}},
-  {"royalblue", {PGA3.point(-1, 1, 1), pyramid_tip}},
-  {"royalblue", {PGA3.point(-1, -1, 1), pyramid_tip}},
-  {"royalblue", {PGA3.point(1, -1, 1), pyramid_tip}},
-  {"royalblue", {PGA3.point(1, 1, 1), PGA3.point(-1, 1, 1)}},
-  {"royalblue", {PGA3.point(1, -1, 1), PGA3.point(-1, -1, 1)}},
-  {"royalblue", {PGA3.point(-1, 1, 1), PGA3.point(-1, -1, 1)}},
-  {"royalblue", {PGA3.point(1, 1, 1), PGA3.point(1, -1, 1)}},
-  {"teal", {PGA3.point(1, 1, 0), PGA3.point(-1, 1, 0)}},
-  {"teal", {PGA3.point(1, -1, 0), PGA3.point(-1, -1, 0)}},
-  {"teal", {PGA3.point(-1, 1, 0), PGA3.point(-1, -1, 0)}},
-  {"teal", {PGA3.point(1, 1, 0), PGA3.point(1, -1, 0)}},
-  {"black", {PGA3.point(-5, 0, 0), PGA3.point(5, 0, 0)}},
-  {"black", {PGA3.point(0, -5, 0), PGA3.point(0, 5, 0)}},
-  {"black", {PGA3.point(0, 0, -3), PGA3.point(0, 0, 4)}}
-]
-
-pyramid_labels = [
-  {"black", PGA3.point(5, 0, 0), "X"},
-  {"black", PGA3.point(0, 5, 0), "Y"},
-  {"black", PGA3.point(0, 0, 4), "Z"}
-]
-
-pyramid_faces = [
-  {"#4444",
-   [
-     PGA3.point(1, 1, 0),
-     PGA3.point(-1, 1, 0),
-     PGA3.point(-1, -1, 0),
-     PGA3.point(1, -1, 0)
-   ]},
-  {"#5554",
-   [
-     PGA3.point(1, 1, 1),
-     PGA3.point(-1, 1, 1),
-     PGA3.point(-1, -1, 1),
-     PGA3.point(1, -1, 1)
-   ]},
-  {"#0504",
-   [
-     PGA3.point(1, 1, 1),
-     PGA3.point(1, -1, 1),
-     pyramid_tip
-   ]},
-  {"#5504",
-   [
-     PGA3.point(-1, 1, 1),
-     PGA3.point(-1, -1, 1),
-     pyramid_tip
-   ]},
-  {"#0554",
-   [
-     PGA3.point(-1, -1, 1),
-     PGA3.point(1, -1, 1),
-     pyramid_tip
-   ]},
-  {"#5054",
-   [
-     PGA3.point(1, 1, 1),
-     PGA3.point(-1, 1, 1),
-     pyramid_tip
-   ]}
-]
-
-scene = Scene.new(pyramid_points, pyramid_edges, pyramid_faces, pyramid_labels)
+scene =
+  Scene.new(
+    points: [
+      {"rebeccapurple", pyramid_tip},
+      {"tomato", PGA3.point(1, 1, 1)},
+      {"tomato", PGA3.point(1, -1, 1)},
+      {"tomato", PGA3.point(-1, -1, 1)},
+      {"tomato", PGA3.point(-1, 1, 1)},
+      {"yellowgreen", PGA3.point(1, 0, 1)},
+      {"yellowgreen", PGA3.point(-1, 0, 1)},
+      {"yellowgreen", PGA3.point(0, -1, 1)},
+      {"yellowgreen", PGA3.point(0, 1, 1)},
+      {"teal", PGA3.point(1, 1, 0)},
+      {"teal", PGA3.point(1, -1, 0)},
+      {"teal", PGA3.point(-1, -1, 0)},
+      {"teal", PGA3.point(-1, 1, 0)}
+    ],
+    edges: [
+      {"royalblue", {PGA3.point(1, 1, 1), pyramid_tip}},
+      {"royalblue", {PGA3.point(-1, 1, 1), pyramid_tip}},
+      {"royalblue", {PGA3.point(-1, -1, 1), pyramid_tip}},
+      {"royalblue", {PGA3.point(1, -1, 1), pyramid_tip}},
+      {"royalblue", {PGA3.point(1, 1, 1), PGA3.point(-1, 1, 1)}},
+      {"royalblue", {PGA3.point(1, -1, 1), PGA3.point(-1, -1, 1)}},
+      {"royalblue", {PGA3.point(-1, 1, 1), PGA3.point(-1, -1, 1)}},
+      {"royalblue", {PGA3.point(1, 1, 1), PGA3.point(1, -1, 1)}},
+      {"teal", {PGA3.point(1, 1, 0), PGA3.point(-1, 1, 0)}},
+      {"teal", {PGA3.point(1, -1, 0), PGA3.point(-1, -1, 0)}},
+      {"teal", {PGA3.point(-1, 1, 0), PGA3.point(-1, -1, 0)}},
+      {"teal", {PGA3.point(1, 1, 0), PGA3.point(1, -1, 0)}},
+      {"black", {PGA3.point(-5, 0, 0), PGA3.point(5, 0, 0)}},
+      {"black", {PGA3.point(0, -5, 0), PGA3.point(0, 5, 0)}},
+      {"black", {PGA3.point(0, 0, -3), PGA3.point(0, 0, 4)}}
+    ],
+    faces: [
+      {"#4444",
+       [
+         PGA3.point(1, 1, 0),
+         PGA3.point(-1, 1, 0),
+         PGA3.point(-1, -1, 0),
+         PGA3.point(1, -1, 0)
+       ]},
+      {"#5554",
+       [
+         PGA3.point(1, 1, 1),
+         PGA3.point(-1, 1, 1),
+         PGA3.point(-1, -1, 1),
+         PGA3.point(1, -1, 1)
+       ]},
+      {"#0504",
+       [
+         PGA3.point(1, 1, 1),
+         PGA3.point(1, -1, 1),
+         pyramid_tip
+       ]},
+      {"#5504",
+       [
+         PGA3.point(-1, 1, 1),
+         PGA3.point(-1, -1, 1),
+         pyramid_tip
+       ]},
+      {"#0554",
+       [
+         PGA3.point(-1, -1, 1),
+         PGA3.point(1, -1, 1),
+         pyramid_tip
+       ]},
+      {"#5054",
+       [
+         PGA3.point(1, 1, 1),
+         PGA3.point(-1, 1, 1),
+         pyramid_tip
+       ]}
+    ],
+    labels: [
+      {"black", PGA3.point(5, 0, 0), "X"},
+      {"black", PGA3.point(0, 5, 0), "Y"},
+      {"black", PGA3.point(0, 0, 4), "Z"}
+    ]
+  )
 
 Kino.nothing()
 ```
 
-<!-- livebook:{"output_size":"wide"} -->
-
 ```elixir
-eye = PGA3.point(7, 5, 3)
+eye = PGA3.point(8, 4, 3)
 target = PGA3.point(0, 0, 1)
 pole = PGA3.ideal_point(0, 0, 1)
 
@@ -283,7 +265,7 @@ Kino.HTML.new("""
 slider =
   Kino.Control.form(
     [
-      eye_x: Kino.Input.range("Eye X", min: -10, max: 10, default: 7, step: 0.2),
+      eye_x: Kino.Input.range("Eye X", min: -10, max: 10, default: 8, step: 0.2),
       eye_y: Kino.Input.range("Eye Y", min: -10, max: 10, default: 3, step: 0.1),
       eye_z: Kino.Input.range("Eye Z", min: -10, max: 10, default: 2, step: 0.1),
       focus_x: Kino.Input.range("Focus X", min: -10, max: 10, default: 0, step: 0.1),
@@ -338,17 +320,266 @@ Kino.listen(slider, render)
 
 render.(%{
   data: %{
-    eye_x: 7,
+    eye_x: 8,
     eye_y: 3,
     eye_z: 2,
     focus_x: 0,
     focus_y: 0,
     focus_z: 1,
-    roll: 0,
+    roll: 0
   }
 })
-
+  
 Kino.Layout.grid([slider, output], columns: 1)
+```
+
+```elixir
+defmodule MyScreen do
+  @behaviour Kino.Screen
+
+  # Import Kino.Control for forms, Kino.Input for inputs, and Screen for control/2
+  import Kino.{Screen}
+
+  # This is a function we will use to start the screen.
+  #
+  # Our screen will be placed in a grid with one additional
+  # frame to render results into. And the state of the screen
+  # holds the form data and the result frame itself.
+  def new(%{} = scene_data, builder) do
+    result_frame = Kino.Frame.new()
+
+    state = %{
+      data: %{
+        eye_x: 8,
+        eye_y: 3,
+        eye_z: 2,
+        focus_x: 0,
+        focus_y: 0,
+        focus_z: 1,
+        roll: 0
+      },
+      scene_data: scene_data,
+      builder: builder,
+      frame: result_frame
+    }
+
+    Kino.Layout.grid([
+      Kino.Screen.new(__MODULE__, state),
+      result_frame
+    ])
+  end
+
+  def render(%{data: data, builder: builder, scene_data: sd}) do
+    camera = Camera.build(data)
+
+    [
+      [
+        Kino.Control.form(
+          [
+            eye_x: Kino.Input.range("Eye X", min: -10, max: 10, default: data.eye_x, step: 0.2),
+            eye_y: Kino.Input.range("Eye Y", min: -10, max: 10, default: data.eye_y, step: 0.1),
+            eye_z: Kino.Input.range("Eye Z", min: -10, max: 10, default: data.eye_z, step: 0.1)
+          ],
+          columns: 2,
+          report_changes: true
+        )
+        |> control(&handle_camera/2),
+        Kino.Control.form(
+          [
+            focus_x:
+              Kino.Input.range("Focus X", min: -10, max: 10, default: data.focus_x, step: 0.1),
+            focus_y:
+              Kino.Input.range("Focus Y", min: -10, max: 10, default: data.focus_y, step: 0.1),
+            focus_z:
+              Kino.Input.range("Focus Z", min: -10, max: 10, default: data.focus_z, step: 0.1),
+            roll: Kino.Input.range("Roll", min: -2, max: 2, default: data.roll, step: 0.1)
+          ],
+          columns: 2,
+          report_changes: true
+        )
+        |> control(&handle_camera/2),
+        Kino.Control.form(
+          for {k, v} <- sd do
+            {k, Kino.Input.range(Atom.to_string(k), min: 1, max: 5, default: v, step: 0.1)}
+          end,
+          columns: 2,
+          report_changes: true
+        )
+        |> control(&handle_scene_data/2)
+      ]
+      |> Kino.Layout.grid(columns: 3),
+      Kino.HTML.new("""
+      <div></div>
+        #{Scene.to_svg(builder.(sd), camera)}
+
+        <style>
+      svg {
+        font-family: monospace, monospace;
+        text-anchor: middle;
+        border: 2px solid #aaa;
+        width: 100%;
+        height: auto;
+        box-sizing: border-box;
+      }
+
+      line {
+      vector-effect: non-scaling-stroke;
+      }
+
+      line[stroke="black"] {
+      stroke-width: 1;
+      vector-effect: non-scaling-stroke;
+      marker-end: url("#vector-head");
+      }
+
+      text {
+      transform: translate(0, -5px);
+      }
+      </style>
+      """)
+    ]
+    |> Kino.Layout.grid()
+  end
+
+  def handle_camera(%{data: data, type: :change}, state) do
+    %{state | data: Map.merge(state.data, data)}
+  end
+
+  def handle_scene_data(%{data: data, type: :change}, state) do
+    %{state | scene_data: Map.merge(state.scene_data, data)}
+  end
+end
+
+MyScreen.new(%{height: 3, width: 2}, fn %{height: h, width: w} ->
+  pyramid_tip = PGA3.point(0, 0, h)
+
+  Scene.new(
+    points: [
+      {"rebeccapurple", pyramid_tip},
+      {"tomato", PGA3.point(w, w, 1)},
+      {"tomato", PGA3.point(w, -w, 1)},
+      {"tomato", PGA3.point(-w, -1, 1)},
+      {"tomato", PGA3.point(-w, w, 1)},
+      {"yellowgreen", PGA3.point(w, 0, 1)},
+      {"yellowgreen", PGA3.point(-w, 0, 1)},
+      {"yellowgreen", PGA3.point(0, -w, 1)},
+      {"yellowgreen", PGA3.point(0, w, 1)},
+      {"teal", PGA3.point(w, w, 0)},
+      {"teal", PGA3.point(w, -w, 0)},
+      {"teal", PGA3.point(-w, -w, 0)},
+      {"teal", PGA3.point(-w, w, 0)}
+    ],
+    edges: [
+      {"royalblue", {PGA3.point(w, w, 1), pyramid_tip}},
+      {"royalblue", {PGA3.point(-w, w, 1), pyramid_tip}},
+      {"royalblue", {PGA3.point(-w, -w, 1), pyramid_tip}},
+      {"royalblue", {PGA3.point(w, -w, 1), pyramid_tip}},
+      {"royalblue", {PGA3.point(w, w, 1), PGA3.point(-w, w, 1)}},
+      {"royalblue", {PGA3.point(w, -w, 1), PGA3.point(-w, -w, 1)}},
+      {"royalblue", {PGA3.point(-w, w, 1), PGA3.point(-w, -w, 1)}},
+      {"royalblue", {PGA3.point(w, w, 1), PGA3.point(w, -w, 1)}},
+      {"teal", {PGA3.point(w, w, 0), PGA3.point(-w, w, 0)}},
+      {"teal", {PGA3.point(w, -w, 0), PGA3.point(-w, -w, 0)}},
+      {"teal", {PGA3.point(-w, w, 0), PGA3.point(-w, -w, 0)}},
+      {"teal", {PGA3.point(w, w, 0), PGA3.point(w, -w, 0)}},
+      {"black", {PGA3.point(-5, 0, 0), PGA3.point(5, 0, 0)}},
+      {"black", {PGA3.point(0, -5, 0), PGA3.point(0, 5, 0)}},
+      {"black", {PGA3.point(0, 0, -3), PGA3.point(0, 0, 4)}}
+    ],
+    faces: [
+      {"#4444",
+       [
+         PGA3.point(w, w, 0),
+         PGA3.point(-w, w, 0),
+         PGA3.point(-w, -w, 0),
+         PGA3.point(w, -w, 0)
+       ]},
+      {"#5554",
+       [
+         PGA3.point(w, w, 1),
+         PGA3.point(-w, w, 1),
+         PGA3.point(-w, -w, 1),
+         PGA3.point(w, -w, 1)
+       ]},
+      {"#0504",
+       [
+         PGA3.point(w, w, 1),
+         PGA3.point(w, -w, 1),
+         pyramid_tip
+       ]},
+      {"#5504",
+       [
+         PGA3.point(-w, w, 1),
+         PGA3.point(-w, -w, 1),
+         pyramid_tip
+       ]},
+      {"#0554",
+       [
+         PGA3.point(-w, -w, 1),
+         PGA3.point(w, -w, 1),
+         pyramid_tip
+       ]},
+      {"#5054",
+       [
+         PGA3.point(w, w, 1),
+         PGA3.point(-w, w, 1),
+         pyramid_tip
+       ]}
+    ],
+    labels: [
+      {"black", PGA3.point(5, 0, 0), "X"},
+      {"black", PGA3.point(0, 5, 0), "Y"},
+      {"black", PGA3.point(0, 0, 4), "Z"}
+    ]
+  )
+end)
+```
+
+```elixir
+m = PGA3.new(scalar: 1, e01: 1)
+
+IO.inspect(PGA3.reverse(m))
+IO.inspect(PGA3.gp(m, PGA3.reverse(m)))
+```
+
+```elixir
+m = PGA3.new(scalar: 1, e20: 2, e30: -1.5)
+
+PGA3.gp(m, PGA3.reverse(m))
+```
+
+```elixir
+PGA3.join(
+  PGA3.new(e12: -1),
+  PGA3.ideal_point(0,0,1)
+)
+
+```
+
+```elixir
+PGA3.gp(
+  PGA3.new(e1: 1),
+  PGA3.inverse(PGA3.new(e1: 1))
+)
+```
+
+```elixir
+position = PGA3.point(0, -4, 3)
+target = PGA3.point(0, 0, 0)
+pole = PGA3.ideal_point(1, 0, 0)
+
+Utils.look_at(position, target, pole)
+```
+
+```elixir
+PGA3.align([PGA3.point(1,1,1)],[PGA3.point(2,2,2)])
+```
+
+```elixir
+PGA3.align(
+  [PGA3.point(1, -1, 0.4), PGA3.point(1, -1.2,-0.3)],
+  [PGA3.point(1,1,0.4), PGA3.point(1,1.15, 0.2)]
+)
 ```
 
 ## Debug Shit
@@ -520,7 +751,7 @@ t |> trans.(PGA3.point(0, 0, 0)) |> PGA3.point_coordinates()
 
 ```elixir
 m =
-  Utils.align(
+  PGA3.align(
     [PGA3.dual(PGA3.new(e0: 1))],
     [PGA3.point(1,1,1)]
   )
@@ -530,19 +761,19 @@ trans.(m, PGA3.point(0,0,0))
 
 ```elixir
 m =
-  Utils.align(
+  PGA3.align(
     [
       PGA3.dual(PGA3.new(e0: 1)),
       PGA3.negate(PGA3.dual(PGA3.new(e3: 1)))
     ],
     [
-      PGA3.point(1,1,1),
-      PGA3.point(0,0,0)
+      PGA3.dual(PGA3.new(e0: 1)),
+      PGA3.negate(PGA3.dual(PGA3.new(e3: 1)))
     ]
   )
 
-IO.inspect(trans.(m, PGA3.point(1,1,1)), label: "eye")
-IO.inspect(trans.(m, PGA3.point(0,0,0)), label: "target")
+IO.inspect(trans.(m, PGA3.point(1, 1, 1)), label: "eye")
+IO.inspect(trans.(m, PGA3.point(0, 0, 0)), label: "target")
 ```
 
 ```elixir
@@ -592,4 +823,321 @@ target
 camera = PGA3.new(scalar: 1)
 
 PGA3.transform(camera, PGA3.point(1, 2, 3)) |> PGA3.point_coordinates()
+```
+
+## CGA2
+
+```elixir
+alias Galixir.Algebras.CGA2
+
+defmodule CGADraw do
+  import CGA2
+
+  def point?(p) do
+    abs(dot(p, p)) < 1.0e-10 and
+      coefficient(p, :ep) != 0 and
+      coefficient(p, :em) != 0
+  end
+
+  def circle?(c) do
+    grades(c) == [1] and
+      coefficient(c, :ep) != 0 and
+      coefficient(c, :em) != 0 and
+      not point?(c)
+  end
+
+  def line?(l) do
+    grades(l) == [3] and
+      coefficient(l, :e12pm) == 0
+  end
+
+  def point_pair?(x) do
+    grades(x) == [2]
+  end
+
+  def circle_parameters(c) do
+    x = coefficient(c, :e1)
+    y = coefficient(c, :e2)
+
+    em = coefficient(c, :em)
+    ep = coefficient(c, :ep)
+
+    r2 =
+      x * x +
+        y * y -
+        (em - ep)
+
+    {{x, y}, :math.sqrt(r2)}
+  end
+
+
+  def project_grade(mv, wanted_grade) do
+    Enum.reduce(0..dimension(), zero(), fn grade, acc ->
+      if grade == wanted_grade do
+        add(acc, grade(mv, grade))
+      else
+        acc
+      end
+    end)
+  end
+
+  def factor(pp) do
+    e = e_inf()
+
+    # line containing the pair
+    line =
+      wedge(pp, e)
+      |> dual()
+
+    # center of the point pair
+    c =
+      pp
+      |> gp(reverse(e))
+      |> project_grade(1)
+
+    # squared distance
+    s =
+      scalar_part(gp(pp, reverse(pp)))
+
+    d = :math.sqrt(abs(s))
+
+    p1 =
+      add(c, scale(d, line))
+      |> normalize_point()
+
+    p2 =
+      sub(c, scale(d, line))
+      |> normalize_point()
+
+    {p1, p2}
+  end
+
+  @doc """
+  Extracts the two Euclidean points from a point pair
+  (e.g. the result of `intersect/2` on two circles).
+
+  Returns `{:ok, {{x1, y1}, {x2, y2}}}` if the objects really
+  intersect in two real points, or `{:error, :no_real_intersection}`
+  if they don't (tangent gives two coincident points; disjoint
+  circles give an imaginary pair).
+  """
+  def point_pair_coordinates(pp) do
+    {p1, p2} = factor(pp)
+
+    {
+      point_coordinates(p1),
+      point_coordinates(p2)
+    }
+  end
+
+  def normalize_point(p) do
+    p
+  end
+
+  def classify(x) do
+    cond do
+      point?(x) ->
+        {:point, point_coordinates(x)}
+
+      circle?(x) ->
+        {:circle, circle_parameters(x)}
+
+      line?(x) ->
+        {:line, line_parameters(x)}
+
+      point_pair?(x) ->
+        {:point_pair, point_pair_coordinates(x)}
+
+      true ->
+        {:unknown, x}
+    end
+  end
+
+  def line_parameters(l) do
+    {
+      CGA2.coefficient(l, :e12p),
+      CGA2.coefficient(l, :e12m),
+      CGA2.coefficient(l, :e1pm)
+    }
+  end
+
+  def to_svg(shapes) do
+    """
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="-500 -500 1000 1000" width="100" height="40">
+
+      #{for {color, s} <- shapes do
+      classify(s) |> case do
+        {:circle, {{cx, cy}, r}} -> """
+          <circle
+            cx="#{cx}"
+            cy="#{cy}"
+            r="#{r}"
+            fill="none"
+            stroke="#{color}"
+            stroke-width="1"/>
+          """
+        {:point, {cx, cy}} -> """
+          <circle
+            cx="#{cx}"
+            cy="#{cy}"
+            r="5"
+            fill="#{color}"
+            stroke="none"
+            stroke-width="1"/>
+          """
+        {:point_pair, {{cx1, cy1}, {cx2, cy2}} = p} -> dbg(p)
+          """
+          <circle
+            cx="#{cx1}"
+            cy="#{cy1}"
+            r="10"
+            fill="#{color}"
+            stroke="none"
+            stroke-width="1"/>
+          <circle
+            cx="#{cx2}"
+            cy="#{cy2}"
+            r="10"
+            fill="#{color}"
+            stroke="none"
+            stroke-width="1"/>
+          """
+        _ -> ""
+      end
+    end}
+
+    </svg>
+    <style>
+    svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    box-sizing: border-box;
+    border: 1px solid red;
+    }
+    </style>
+    """
+  end
+
+  def circle(x, y, r) do
+    add(
+      point(x, y),
+      scale(
+        -0.5 * r * r,
+        e_inf()
+      )
+    )
+  end
+
+  def contains?(object, point) do
+    abs(dot(object, point)) < 1.0e-10
+  end
+
+  def inside?(circle, point) do
+    {{cx, cy}, r} = circle_parameters(circle)
+    {x, y} = point_coordinates(point)
+
+    dx = x - cx
+    dy = y - cy
+
+    dx * dx + dy * dy < r * r
+  end
+
+  def intersect(a, b) do
+    wedge(a, b)
+  end
+end
+
+p = CGA2.point(0, 200)
+
+c =
+  CGA2.circle(
+    CGA2.point(0, 0),
+    300
+  )
+
+c1 =
+  CGA2.circle(
+    CGA2.point(50, 30),
+    100
+  )
+
+c2 =
+  CGA2.circle(
+    CGA2.point(150, 30),
+    100
+  )
+
+Kino.HTML.new(
+  CGADraw.to_svg([
+    {:blue, c1},
+    {:green, c2},
+    {:red, CGA2.point(100, 30)},
+    {:orange, c},
+    {:magenta, CGA2.point(100, 30)},
+    {if(CGADraw.inside?(c, p), do: "green", else: "red"), p},
+    {:magenta, CGADraw.intersect(c1, c2)}
+  ])
+)
+```
+
+```elixir
+CGADraw.circle_parameters(
+  CGA2.circle(
+    CGA2.point(50, 30),
+    100
+  )
+)
+```
+
+```elixir
+CGADraw.intersect(c1, c2)
+```
+
+```elixir
+c1 =
+  CGA2.circle(
+    CGA2.point(50, 30),
+    100
+  )
+
+c2 =
+  CGA2.circle(
+    CGA2.point(150, 30),
+    100
+  )
+
+CGADraw.intersect(c1, c2)
+|> CGADraw.point_pair_coordinates()
+```
+
+```elixir
+c = CGA2.circle(50, 30, 100)
+
+IO.inspect(c)
+IO.inspect(CGA2.dual(c))
+IO.inspect(CGA2.grades(CGA2.dual(c)))
+```
+
+```elixir
+pp =
+  CGADraw.intersect(c1, c2)
+
+IO.inspect(CGA2.dual(pp))
+```
+
+```elixir
+CGA2.wedge(c1,c2)
+```
+
+```elixir
+pp =
+  CGA2.wedge(
+    CGA2.point(10, 20),
+    CGA2.point(30, 40)
+  )
+
+IO.inspect(pp)
 ```
