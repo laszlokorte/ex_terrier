@@ -2,7 +2,7 @@
 
 ```elixir
 Mix.install([
-  {:galixir, "~> 0.15.0"},
+  {:galixir, "~> 0.20.0"},
   {:kino, "~> 0.19.0"}
 ])
 ```
@@ -825,6 +825,15 @@ camera = PGA3.new(scalar: 1)
 PGA3.transform(camera, PGA3.point(1, 2, 3)) |> PGA3.point_coordinates()
 ```
 
+```elixir
+alias Galixir.Algebras.CGA2
+
+CGA2.e_o()
+|> CGA2.gp(CGA2.e_o())
+```
+
+<!-- livebook:{"branch_parent_index":0} -->
+
 ## CGA2
 
 ```elixir
@@ -840,10 +849,7 @@ defmodule CGADraw do
   end
 
   def circle?(c) do
-    grades(c) == [1] and
-      coefficient(c, :ep) != 0 and
-      coefficient(c, :em) != 0 and
-      not point?(c)
+    grades(c) == [3]
   end
 
   def line?(l) do
@@ -856,82 +862,91 @@ defmodule CGADraw do
   end
 
   def circle_parameters(c) do
-    x = coefficient(c, :e1)
-    y = coefficient(c, :e2)
+    v = gp(c, inverse(pseudoscalar()))
 
-    em = coefficient(c, :em)
-    ep = coefficient(c, :ep)
+    e1 = coefficient(v, :e1) || 0.0
+    e2 = coefficient(v, :e2) || 0.0
+
+    ep = coefficient(v, :ep) || 0.0
+    em = coefficient(v, :em) || 0.0
+
+    w = em - ep
+
+    if abs(w) < 1.0e-10 do
+      {:line,
+       {
+         e1,
+         e2,
+         (em + ep) / 2
+       }}
+    else
+      x = e1 / w
+      y = e2 / w
+
+      k = (em + ep) / (2 * w)
+
+      r =
+        :math.sqrt(
+          x * x +
+            y * y -
+            2 * k
+        )
+
+      {:circle, {{x, y}, r}}
+    end
+  end
+
+  def split(o) do
+    import Galixir.Algebras.CGA2
+
+    ei = e_inf()
+    eo = e_o()
+
+    nix = wedge(o, ei)
+
+    nix2 = scalar_part(inner(nix, nix))
+
+    if abs(nix2) < 1.0e-12 do
+      raise ArgumentError, "invalid point pair"
+    end
 
     r2 =
-      x * x +
-        y * y -
-        (em - ep)
+      scalar_part(inner(o, o)) / nix2
 
-    {{x, y}, :math.sqrt(r2)}
-  end
+    r = :math.sqrt(abs(r2))
 
+    pos =
+      o
+      |> gp(inverse(nix))
+      |> normalize_point()
 
-  def project_grade(mv, wanted_grade) do
-    Enum.reduce(0..dimension(), zero(), fn grade, acc ->
-      if grade == wanted_grade do
-        add(acc, grade(mv, grade))
-      else
-        acc
+    attitude =
+      wedge(ei, eo)
+      |> inner(nix)
+      |> normalize()
+      |> scale(r)
+
+    kind =
+      cond do
+        r2 >= 0 ->
+          :real
+
+        true ->
+          :imag
       end
-    end)
-  end
-
-  def factor(pp) do
-    e = e_inf()
-
-    # line containing the pair
-    line =
-      wedge(pp, e)
-      |> dual()
-
-    # center of the point pair
-    c =
-      pp
-      |> gp(reverse(e))
-      |> project_grade(1)
-
-    # squared distance
-    s =
-      scalar_part(gp(pp, reverse(pp)))
-
-    d = :math.sqrt(abs(s))
-
-    p1 =
-      add(c, scale(d, line))
-      |> normalize_point()
-
-    p2 =
-      sub(c, scale(d, line))
-      |> normalize_point()
-
-    {p1, p2}
-  end
-
-  @doc """
-  Extracts the two Euclidean points from a point pair
-  (e.g. the result of `intersect/2` on two circles).
-
-  Returns `{:ok, {{x1, y1}, {x2, y2}}}` if the objects really
-  intersect in two real points, or `{:error, :no_real_intersection}`
-  if they don't (tangent gives two coincident points; disjoint
-  circles give an imaginary pair).
-  """
-  def point_pair_coordinates(pp) do
-    {p1, p2} = factor(pp)
 
     {
-      point_coordinates(p1),
-      point_coordinates(p2)
+      kind,
+      normalize_point(add(pos, attitude)),
+      normalize_point(sub(pos, attitude))
     }
   end
 
   def normalize_point(p) do
-    p
+    w =
+      -scalar_part(inner(p, e_inf()))
+
+    scale(p, 1 / w)
   end
 
   def classify(x) do
@@ -946,7 +961,13 @@ defmodule CGADraw do
         {:line, line_parameters(x)}
 
       point_pair?(x) ->
-        {:point_pair, point_pair_coordinates(x)}
+        {kind, p1, p2} = split(x)
+
+        {
+          :point_pair,
+          kind,
+          {point_coordinates(p1), point_coordinates(p2)}
+        }
 
       true ->
         {:unknown, x}
@@ -965,14 +986,14 @@ defmodule CGADraw do
     """
     <svg
       xmlns="http://www.w3.org/2000/svg"
-      viewBox="-500 -500 1000 1000" width="100" height="40">
+      viewBox="-50 -50 100 100" width="100" height="40">
 
       #{for {color, s} <- shapes do
       classify(s) |> case do
-        {:circle, {{cx, cy}, r}} -> """
+        {:circle, {:circle, {{cx, cy}, r}}} -> """
           <circle
             cx="#{cx}"
-            cy="#{cy}"
+            cy="#{-cy}"
             r="#{r}"
             fill="none"
             stroke="#{color}"
@@ -981,28 +1002,46 @@ defmodule CGADraw do
         {:point, {cx, cy}} -> """
           <circle
             cx="#{cx}"
-            cy="#{cy}"
-            r="5"
+            cy="#{-cy}"
+            r="1"
             fill="#{color}"
             stroke="none"
             stroke-width="1"/>
           """
-        {:point_pair, {{cx1, cy1}, {cx2, cy2}} = p} -> dbg(p)
-          """
+        {:point_pair, :real, {{cx1, cy1}, {cx2, cy2}}} -> """
           <circle
             cx="#{cx1}"
-            cy="#{cy1}"
-            r="10"
+            cy="#{-cy1}"
+            r="1"
             fill="#{color}"
-            stroke="none"
+          stroke="none"
             stroke-width="1"/>
           <circle
             cx="#{cx2}"
-            cy="#{cy2}"
-            r="10"
+            cy="#{-cy2}"
+            r="1"
+          stroke="none"
             fill="#{color}"
-            stroke="none"
+          fill-opacity="0.5"
             stroke-width="1"/>
+          """
+        {:point_pair, :imag, {{cx1, cy1}, {cx2, cy2}}} -> """
+          <circle
+            cx="#{cx1}"
+            cy="#{-cy1}"
+            r="1"
+            stroke="#{color}"
+          fill="none"
+          stroke-dasharray="1 1"
+            stroke-width="2"/>
+          <circle
+            cx="#{cx2}"
+            cy="#{-cy2}"
+            r="1"
+            fill="none"
+          stroke-dasharray="1 1"
+            stroke="#{color}"
+            stroke-width="2"/>
           """
         _ -> ""
       end
@@ -1021,65 +1060,417 @@ defmodule CGADraw do
     """
   end
 
-  def circle(x, y, r) do
-    add(
-      point(x, y),
-      scale(
-        -0.5 * r * r,
-        e_inf()
-      )
-    )
-  end
-
-  def contains?(object, point) do
-    abs(dot(object, point)) < 1.0e-10
-  end
-
-  def inside?(circle, point) do
-    {{cx, cy}, r} = circle_parameters(circle)
-    {x, y} = point_coordinates(point)
-
-    dx = x - cx
-    dy = y - cy
-
-    dx * dx + dy * dy < r * r
-  end
-
   def intersect(a, b) do
-    wedge(a, b)
+    undual(wedge(dual(a), dual(b)))
+    wedge(gp(a, pseudoscalar()), gp(b, pseudoscalar())) |> gp(inverse(pseudoscalar()))
   end
 end
 
-p = CGA2.point(0, 200)
+p0 = CGA2.point(10, 4)
+p1 = CGA2.point(10, 15)
+p2 = CGA2.point(0, 10)
 
-c =
-  CGA2.circle(
-    CGA2.point(0, 0),
-    300
-  )
+c1 = CGA2.circle(p0, 15)
+c2 = CGA2.circle(p2, 10)
+c3 = CGA2.circle(p1, 25)
 
-c1 =
-  CGA2.circle(
-    CGA2.point(50, 30),
-    100
-  )
+p4 = CGA2.point(50, 8)
+p5 = CGA2.point(43, 20)
+p6 = CGA2.point(60, 10)
 
-c2 =
-  CGA2.circle(
-    CGA2.point(150, 30),
-    100
-  )
+cc = CGA2.wedge(p4, p5) |> CGA2.wedge(p6)
 
 Kino.HTML.new(
   CGADraw.to_svg([
     {:blue, c1},
     {:green, c2},
-    {:red, CGA2.point(100, 30)},
-    {:orange, c},
-    {:magenta, CGA2.point(100, 30)},
-    {if(CGADraw.inside?(c, p), do: "green", else: "red"), p},
-    {:magenta, CGADraw.intersect(c1, c2)}
+    {:green, p2},
+    {:orange, c3},
+    {:orange, p1},
+    {:blue, p0},
+    {:purple, p4},
+    {:purple, p5},
+    {:purple, p6},
+    {:hotpink, cc},
+    {:orange, CGADraw.intersect(c2, c3)},
+    {:cyan, CGADraw.intersect(c1, c2)},
+    {:cyan, CGADraw.intersect(c1, c3)}
+    # {:red, CGA2.wedge(CGA2.point(10, 10), CGA2.point(10, -10))},
+    # {:magenta, CGA2.point(40, 60)},
+    # {:limegreen, CGA1.new(e12: -4, e1p: -19.5, e1m: -16.5, e2p: 23, e2m: 17, epm: -12)},
+    # {:brown, CGA2.new(e12: 12, e1p: 19.5, e1m: 16.5, e2p: 9, e2m: 15, epm: 12)}
   ])
+)
+```
+
+## Debug Shit 2
+
+```elixir
+p1 = CGA2.point(2, 3) |> IO.inspect(label: "p1")
+p2 = CGA2.point(-4, 0) |> IO.inspect(label: "p2")
+
+c1 = CGA2.circle(p1, 3) |> IO.inspect(label: "c1")
+c2 = CGA2.circle(p2, 2) |> IO.inspect(label: "c2")
+c3 = CGA2.circle(p1, 5) |> IO.inspect(label: "c3")
+
+pair_a = CGA2.meet(c1, c2) |> IO.inspect(label: "pair_a")
+pair_b = CGA2.meet(c2, c3) |> IO.inspect(label: "pair_b")
+
+# pointpairA -4e_12 - 19.5e_1p - 16.5e_1m + 23e_2p + 17e_2m - 12e_pm
+a = CGA2.new(e12: -4, e1p: -19.5, e1m: -16.5, e2p: 23, e2m: 17, epm: -12) |> IO.inspect()
+# actual:    -4.0e12 -19.5e1p + 23.0e2p -16.5e1m + 17.0e2m -12.0epm
+
+# pointpairB 12e_12 + 19.5e_1p + 16.5e_1m +  9e_2p + 15e_2m + 12e_pm
+#     actual:  12.0e12 + 19.5e1p + 9.0e2p + 16.5e1m + 15.0e2m + 12.0epm
+b = CGA2.new(e12: 12, e1p: 19.5, e1m: 16.5, e2p: 9, e2m: 15, epm: 12) |> IO.inspect()
+```
+
+```elixir
+defmodule Split2 do
+  def split(%CGA2{} = b) do
+    import Galixir.Algebras.CGA2
+    b2 = scalar_part(inner(b, b))
+
+    if b2 == 0 do
+      raise ArgumentError, "cannot split null bivector"
+    end
+
+    b_bar =
+      scale(b, 1 / :math.sqrt(abs(b2)))
+
+    p =
+      add(
+        new(scalar: 1),
+        b_bar
+      )
+
+    p_tilde =
+      sub(
+        new(scalar: 1),
+        b_bar
+      )
+
+    v =
+      inner(
+        b,
+        new(em: 1)
+      )
+
+    p1 =
+      gp(p, v)
+
+    p2 =
+      gp(p_tilde, v)
+
+    {
+      p1,
+      p2
+    }
+  end
+
+  def normalize_point(p) do
+    import Galixir.Algebras.CGA2
+    w = scalar_part(inner(p, e_o()))
+    scale(p, 1 / w)
+  end
+end
+
+c1 =
+  CGA2.circle(CGA2.point(10, 0), :math.sqrt(200))
+  |> IO.inspect(label: "c1 = circle(point(10,0), sqrt(200))")
+
+c2 =
+  CGA2.circle(CGA2.point(-10, 0), :math.sqrt(200))
+  |> IO.inspect(label: "c2 = circle(point(-10, 0), sqrt(200))")
+
+CGA2.dual(c1) |> IO.inspect(label: "dual(c1)")
+CGA2.dual(c2) |> IO.inspect(label: "dual(c2)")
+CGA2.wedge(CGA2.dual(c1), CGA2.dual(c2)) |> IO.inspect(label: "wedge(dual(c1), dual(c2))")
+
+CGA2.undual(CGA2.wedge(CGA2.dual(c1), CGA2.dual(c2)))
+|> IO.inspect(label: "undual(wedge(dual(c1), dual(c2)))")
+
+CGA2.dual(CGA2.wedge(CGA2.dual(c1), CGA2.dual(c2)))
+|> IO.inspect(label: "dual(wedge(dual(c1), dual(c2)))")
+
+expected_inter_p1 = CGA2.point(0, 10) |> IO.inspect(label: "expected p1 [p1 = point(0, 10)]")
+expected_inter_p2 = CGA2.point(0, -10) |> IO.inspect(label: "expected p2 [p2 = point(0, -10)]")
+
+expected_pair =
+  CGA2.wedge(expected_inter_p1, expected_inter_p2)
+  |> IO.inspect(label: "expected pair [wedge(p1, p2)]")
+
+c1c2intersection =
+  CGA2.meet(c1, c2)
+  |> IO.inspect(label: "actual_pair [meet(c1, c2)]")
+
+{i1, i2} =
+  Split2.split(CGA2.scale(-1, c1c2intersection))
+  |> IO.inspect(label: "(i1, i2) = split(-meet(c1, c2))")
+
+{e1, e2} = Split2.split(expected_pair) |> IO.inspect(label: "(e1, e2) = split(wedge(p1, p2))")
+
+CGA2.point_coordinates(i1) |> IO.inspect(label: "coords(i1)")
+CGA2.point_coordinates(e1) |> IO.inspect(label: "coords(e1)")
+
+CGA2.point_coordinates(i2) |> IO.inspect(label: "coords(i2)")
+CGA2.point_coordinates(e2) |> IO.inspect(label: "coords(e2)")
+
+Kino.nothing()
+```
+
+```elixir
+CGA2.dual(CGA2.new(e1p: 1)) |> dbg
+CGA2.dual(CGA2.new(e1m: 1)) |> dbg
+```
+
+```elixir
+import Galixir.Algebras.CGA2
+
+c1 =
+  CGA2.circle(CGA2.point(10, 0) |> IO.inspect(label: "p1"), :math.sqrt(200))
+  |> IO.inspect(label: "c1 = circle(point(10,0), sqrt(200))")
+
+c2 =
+  CGA2.circle(CGA2.point(-10, 0) |> IO.inspect(label: "p2"), :math.sqrt(200))
+  |> IO.inspect(label: "c2 = circle(point(-10, 0), sqrt(200))")
+
+dual_a = fn c -> gp(c, pseudoscalar()) end
+dual_b = fn c -> gp(pseudoscalar(), c) end
+
+manual_pair =
+  CGA2.wedge(CGA2.point(0, 10), CGA2.point(0, -10))
+  |> IO.inspect(label: "manual_pair = CGA2.wedge(CGA2.point(10, 0), CGA2.point(-10, 0))")
+
+pair =
+  CGA2.meet(c1, c2) |> IO.inspect(label: "pair = meet.(dual_a, c1, c2)")
+
+{p1, p2} = Split2.split(pair) |> IO.inspect(label: "split(pair)")
+{mp1, mp2} = Split2.split(manual_pair) |> IO.inspect(label: "split(manual_pair)")
+
+CGA2.point_coordinates(p1) |> IO.inspect(label: "point_coords(p1)")
+CGA2.point_coordinates(p2) |> IO.inspect(label: "point_coords(p2")
+CGA2.point_coordinates(mp1) |> IO.inspect(label: "point_coords(mp1)")
+CGA2.point_coordinates(mp2) |> IO.inspect(label: "point_coords(mp2)")
+```
+
+```elixir
+IO.inspect(CGA2.pseudoscalar(), label: "I")
+IO.inspect(CGA2.gp(CGA2.pseudoscalar(), CGA2.pseudoscalar()), label: "I²")
+IO.inspect(CGA2.dual(c1), label: "dual(c1)")
+```
+
+```elixir
+IO.inspect(
+  CGA2.wedge(CGA2.new(ep: 1), CGA2.new(em: 1)),
+  label: "ep wedge em"
+)
+```
+
+```elixir
+IO.inspect(
+  CGA2.wedge(CGA2.new(em: 1), CGA2.new(ep: 1)),
+  label: "em wedge ep"
+)
+```
+
+```elixir
+x = CGA2.new(e2p: 1, e2m: 1)
+
+import Galixir.Algebras.CGA2
+
+IO.inspect(
+  dual(dual(x)),
+  label: "dual dual"
+)
+```
+
+```elixir
+CGA2.wedge(CGA2.new(e1: 1), CGA2.new(e2: 1))
+```
+
+```elixir
+b = CGA2.new(e2p: 990, e2m: -1010)
+IO.inspect(CGA2.gp(b, b), label: "B²")
+```
+
+```elixir
+i = CGA2.pseudoscalar()
+
+for blade <- [
+  CGA2.new(e12p: 1),
+  CGA2.new(e12m: 1),
+  CGA2.new(e2pm: 1)
+] do
+  d = CGA2.gp(blade, i)
+  dd = CGA2.gp(d, i)
+
+  IO.inspect(blade, label: "blade")
+  IO.inspect(d, label: "× I")
+  IO.inspect(dd, label: "× I × I")
+end
+```
+
+```elixir
+c1 = CGA2.circle(CGA2.point(0, 0), 10)
+c2 = CGA2.circle(CGA2.point(0, 0), 10)
+p1 = CGA2.point(0, 10)
+p2 = CGA2.point(0, -10)
+
+CGA2.inner(p1, CGA2.dual(c1)) |> IO.inspect()
+CGA2.inner(p1, CGA2.dual(c2)) |> IO.inspect()
+
+CGA2.inner(p2, CGA2.dual(c1)) |> IO.inspect()
+CGA2.inner(p2, CGA2.dual(c2)) |> IO.inspect()
+```
+
+```elixir
+Galixir.Blade.swap_sign(0b1000, 0b0001)
+```
+
+```elixir
+c = CGA2.circle(CGA2.point(0,0),10)
+CGA2.dual(c)
+```
+
+```elixir
+CGA2.wedge(
+  CGA2.new(em: 1),
+  CGA2.new(e1: 1)
+)
+```
+
+```elixir
+import Galixir.Algebras.CGA2
+i = pseudoscalar()
+
+IO.inspect(gp(i, i), label: "I²")
+IO.inspect(gp(inverse(i), i), label: "I^-1 I")
+IO.inspect(gp(i, inverse(i)), label: "I I^-1")
+```
+
+```elixir
+pair = CGA2.meet(c1, c2)
+
+CGA2.inner(p1, CGA2.dual(pair)) |> IO.inspect()
+CGA2.inner(p2, CGA2.dual(pair)) |> IO.inspect()
+```
+
+```elixir
+i = CGA2.pseudoscalar()
+
+for b <- [:e1p, :e1m, :e2p, :e2m] do
+  x = CGA2.new([{b,1}])
+
+  IO.inspect(
+    {b,
+     CGA2.dual(x),
+     CGA2.gp(CGA2.dual(x), i)}
+  )
+end
+```
+
+```elixir
+pair =
+  CGA2.wedge(p1, p2)
+  |> IO.inspect()
+
+pair2 =
+  pair
+  |> CGA2.dual()
+  |> CGA2.dual()
+
+IO.inspect(pair2)
+```
+
+```elixir
+i = CGA2.pseudoscalar()
+
+CGA2.gp(i, i)
+```
+
+```elixir
+CGA2.point(10,0)
+CGA2.scale(50, CGA2.e_inf())
+```
+
+```elixir
+x = CGA2.new(e1p: 1)
+IO.inspect(CGA2.dual(CGA2.dual(x)))
+```
+
+```elixir
+CGA2.new(e1p: 1) |> CGA2.dual() |> IO.inspect()
+CGA2.new(e1m: 1) |> CGA2.dual() |> IO.inspect()
+CGA2.new(e2p: 1) |> CGA2.dual() |> IO.inspect()
+CGA2.new(e2m: 1) |> CGA2.dual() |> IO.inspect()
+```
+
+```elixir
+i = CGA2.pseudoscalar()
+
+CGA2.new(e1p: 1)
+|> CGA2.gp(i)
+|> IO.inspect()
+
+CGA2.new(e1p: 1)
+|> CGA2.gp(CGA2.reverse(i))
+|> IO.inspect()
+```
+
+```elixir
+CGA2.new(e1p: 1, e1m: 1)
+|> CGA2.dual()
+|> CGA2.dual()
+```
+
+```elixir
+meet = fn a, b ->
+  CGA2.undual(
+    CGA2.wedge(
+      CGA2.dual(a),
+      CGA2.dual(b)
+    )
+  )
+end
+
+p1 = CGA2.point(0, 10)
+p2 = CGA2.point(0, -10)
+
+pair = CGA2.wedge(p1, p2)
+
+IO.inspect(meet.(CGA2.dual(p1), CGA2.dual(p2)))
+|> dbg()
+
+CGA2.wedge(p1, p2)
+|> dbg
+```
+
+```elixir
+pair =
+  CGA2.wedge(
+    CGA2.point(0, 10),
+    CGA2.point(0, -10)
+  )
+
+Split2.split(pair)
+|> then(fn {a, b} -> {CGA2.point_coordinates(a), CGA2.point_coordinates(b)} end)
+```
+
+```elixir
+x = CGA2.new(e2p: 1)
+
+IO.inspect(
+  CGA2.undual(CGA2.dual(x)),
+  label: "double dual"
+)
+```
+
+```elixir
+IO.inspect(c1, label: "circle")
+IO.inspect(
+  CGA2.undual(CGA2.dual(c1)),
+  label: "circle double dual"
 )
 ```
 
@@ -1093,24 +1484,66 @@ CGADraw.circle_parameters(
 ```
 
 ```elixir
-CGADraw.intersect(c1, c2)
+CGA2.wedge(c1, c2)
 ```
 
 ```elixir
+CGA2.pseudoscalar() |> IO.inspect(label: "pseudoscalar")
+CGA2.pseudoscalar() |> CGA2.blade_inverse() |> IO.inspect(label: "blade_inverse(pseudoscalar)")
+
 c1 =
   CGA2.circle(
-    CGA2.point(50, 30),
+    CGA2.point(50, 0),
     100
   )
+  |> IO.inspect(label: "c1")
 
 c2 =
   CGA2.circle(
-    CGA2.point(150, 30),
+    CGA2.point(-50, 0),
     100
   )
+  |> IO.inspect(label: "c2")
 
-CGADraw.intersect(c1, c2)
-|> CGADraw.point_pair_coordinates()
+c1 |> CGA2.dual() |> IO.inspect(label: "dual(c1)")
+c2 |> CGA2.dual() |> IO.inspect(label: "dual(c2)")
+
+CGA2.wedge(c1, c2) |> IO.inspect()
+# => 375050.0e1p -374950.0e1m
+CGA2.wedge(CGA2.dual(c1), CGA2.dual(c2)) |> IO.inspect(label: "wedge dual righ")
+# => 0
+
+CGA2.wedge(
+  CGA2.new(e12p: 1),
+  CGA2.new(e1pm: 1)
+)
+|> IO.inspect(label: "better test")
+
+CGA2.wedge(
+  CGA2.new(e12m: 1),
+  CGA2.new(e1pm: 1)
+)
+|> IO.inspect(label: "better test 2")
+
+c1 =
+  CGA2.circle(
+    CGA2.point(50, 20),
+    100
+  )
+  |> IO.inspect(label: "c1")
+
+c2 =
+  CGA2.circle(
+    CGA2.point(-50, 0),
+    100
+  )
+  |> IO.inspect(label: "c2")
+
+CGADraw.intersect(
+  c1,
+  c2
+)
+|> IO.inspect(label: "intersection")
 ```
 
 ```elixir
@@ -1119,6 +1552,110 @@ c = CGA2.circle(50, 30, 100)
 IO.inspect(c)
 IO.inspect(CGA2.dual(c))
 IO.inspect(CGA2.grades(CGA2.dual(c)))
+```
+
+```elixir
+defmodule Split do
+  import Galixir.Algebras.CGA2
+
+  def split(%CGA2{} = b) do
+    b2 = scalar_part(gp(b, b))
+
+    if b2 == 0 do
+      raise ArgumentError, "cannot split null bivector"
+    end
+
+    b_bar =
+      scale(b, 1 / :math.sqrt(abs(b2)))
+
+    p =
+      add(
+        new(scalar: 1),
+        b_bar
+      )
+
+    p_tilde =
+      sub(
+        new(scalar: 1),
+        b_bar
+      )
+
+    v =
+      left_contraction(
+        b,
+        new(em: 1)
+      )
+
+    p1 =
+      gp(p, v)
+
+    p2 =
+      gp(p_tilde, v)
+
+    {
+      p1,
+      p2
+    }
+  end
+end
+
+p1 = CGA2.point(-2, 0) |> IO.inspect(label: "p1")
+p2 = CGA2.point(2, 0) |> IO.inspect(label: "p1")
+#  -2e_1+1.5e_p+2.5e_m
+
+c1 =
+  CGA2.circle(p1, 4)
+  # -2.5e12p -3.5e12m + 2.0e2pm
+  # -2.5e_12p-3.5e_12m-2e_2mp
+  |> IO.inspect(label: "c1")
+
+c2 =
+  CGA2.circle(p2, 4)
+  # -4e_12p-5e_12m+e_2pm
+  |> IO.inspect(label: "c2")
+
+# -2e_12+e_2p+3e_2m
+custom_point_pair =
+  CGA2.point(1, 1)
+  |> CGA2.wedge(CGA2.point(1, -1))
+  |> IO.inspect(label: "custom point pair")
+
+# p1 -2e_1+1.5e_p+2.5e_m 
+#  p2 2e_1+1.5e_p+2.5e_m 
+#  c1 -2.5e_12p-p.5e_12m-2e_2pm 
+#  c2 -2.5e_12p-p.5e_12m+2e_2pm 
+#  pointpair -10e_2m-14e_2p
+
+p =
+  CGA2.dual(
+    CGA2.wedge(
+      CGA2.dual(c1),
+      CGA2.dual(c2)
+    )
+  )
+  |> IO.inspect(label: "point_pair")
+  |> Split.split()
+  |> IO.inspect(label: "split point pair")
+  |> elem(0)
+
+custom_point_pair
+|> Split.split()
+|> elem(0)
+|> CGA2.point_coordinates()
+|> IO.inspect(label: "custom_1 coord")
+
+p |> CGA2.point_coordinates() |> IO.inspect(label: "p_1 coord")
+
+IO.inspect(p, label: "p")
+IO.inspect(CGA2.dot(p, p), label: "P·P")
+
+IO.inspect(CGA2.dot(p, CGA2.e_inf()), label: "P·e∞")
+IO.inspect(CGA2.dot(p, CGA2.e_o()), label: "P·eo")
+```
+
+```elixir
+CGA2.point(7, 9)
+|> CGA2.point_coordinates()
 ```
 
 ```elixir
